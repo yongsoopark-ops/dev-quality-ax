@@ -1,0 +1,11 @@
+[build]
+  command = "npm run build"
+
+[[plugins]]
+  package = "@netlify/plugin-nextjs"
+
+# pg(node-postgres)는 순수 JS 기반 TCP 드라이버지만, Netlify Functions 번들러가
+# 정적 분석만으로 필요 여부를 못 잡아내는 경우가 있어 명시적으로 포함시킨다 —
+# 없으면 Runtime에서 "Cannot find module 'pg'" 류 오류가 날 수 있다.
+[functions]
+  external_node_modules = ["pg"]

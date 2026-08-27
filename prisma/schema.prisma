@@ -1,0 +1,473 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../app/generated/prisma"
+}
+
+// Supabase PostgreSQL. Prisma 7부터 schema.prisma에 url/directUrl을 두는 것
+//자체가 금지되어(설정은 전부 prisma.config.ts/PrismaClient 생성자로 이동)
+// 연결 정보는 여기 두지 않는다 — 대신:
+//   - CLI(migrate/generate): prisma.config.ts의 datasource.url = DIRECT_URL
+//     (PgBouncer를 거치지 않는 Direct 연결 — 스키마 변경에 적합)
+//   - 런타임 쿼리: lib/prisma.ts가 @prisma/adapter-pg에 DATABASE_URL(Pooled,
+//     PgBouncer 경유)을 직접 넘긴다
+// 두 URL이 이렇게 완전히 분리된 경로로 각자 쓰인다(Supabase 권장 이중 연결).
+datasource db {
+  provider = "postgresql"
+}
+
+enum Role {
+  ADMIN
+  MEMBER
+}
+
+enum UserStatus {
+  INVITED
+  ACTIVE
+  DISABLED
+}
+
+enum SyncStatus {
+  CONNECTED
+  SYNCING
+  ERROR
+}
+
+enum MetricType {
+  COUNT
+  COUNT_ALL
+  RATIO
+  SUM
+}
+
+enum ChartType {
+  NUMBER_CARD
+  BAR
+  HORIZONTAL_BAR
+  LINE
+  AREA
+  DONUT
+  PIE
+  PROGRESS
+}
+
+enum AiProvider {
+  GOOGLE
+  OPENAI
+  ANTHROPIC
+  OTHER
+}
+
+enum AiTaskType {
+  VOC_ANALYSIS
+  DOCUMENT_ANALYSIS
+  AI_CHAT
+  SHEET_AI_INPUT
+  DRIVE_AI
+  OTHER
+}
+
+enum AiUsageStatus {
+  SUCCESS
+  FAILED
+}
+
+enum TaskCategory {
+  PROJECT
+  PERSONAL_GOAL
+  EXCEPTION
+  MEETING
+  COMMON
+  VACATION
+  HALF_DAY
+}
+
+/// 지연 여부는 별도 상태값이 아니라 (dueDate < now && status != DONE)로 그때그때 계산한다 —
+/// DB에 저장하지 않는다.
+enum TaskStatus {
+  TODO
+  IN_PROGRESS
+  DONE
+  ON_HOLD
+}
+
+/// 지금은 MENTION만 실제로 생성한다. TASK_CHANGED/DUE_SOON/OVERDUE/ANNOUNCEMENT는
+/// 이번 Step 범위가 아니라서 만들지 않지만, Notification 한 테이블이 그대로
+/// 수용할 수 있도록 enum 자리만 미리 마련해 둔다(요청사항) — 지금 구현하지 않음.
+enum NotificationType {
+  MENTION
+}
+
+model User {
+  id          String     @id @default(cuid())
+  email       String     @unique
+  name        String?
+  role        Role       @default(MEMBER)
+  status      UserStatus @default(INVITED)
+  createdAt   DateTime   @default(now())
+  lastLoginAt DateTime?
+
+  /// 마지막 실제 활동(클릭/키보드/Route 이동 등) 시각 — 사용중/부재중 판정에 사용
+  lastActiveAt    DateTime?
+  /// 로그인된 웹사이트가 열려 있다는 마지막 생존 신호 — 접속/미접속 판정에 사용
+  lastHeartbeatAt DateTime?
+
+  sheetSources     GoogleSheetSource[]
+  kpiDefinitions   KPIDefinition[]
+  aiUsages         AIUsage[]
+  dashboardLayouts DashboardLayout[]
+  sidebarLayouts   SidebarLayout[]
+
+  createdTasks          Task[]                 @relation("TaskCreator")
+  taskAssignments       TaskAssignee[]
+  meetingAttendances    TaskMeetingAttendee[]
+  taskScheduleRevisions TaskScheduleRevision[] @relation("TaskScheduleRevisionCreator")
+  authoredComments      TaskComment[]          @relation("TaskCommentAuthor")
+  notifications         Notification[]         @relation("NotificationUser")
+  actedNotifications    Notification[]         @relation("NotificationActor")
+}
+
+model GoogleSheetSource {
+  id             String     @id @default(cuid())
+  name           String
+  spreadsheetId  String
+  spreadsheetUrl String
+  sheetName      String
+  headerRow      Int        @default(1)
+  headers        String     @default("[]")
+  rowCount       Int        @default(0)
+  lastSyncedAt   DateTime?
+  lastModifiedAt DateTime?
+  syncStatus     SyncStatus @default(SYNCING)
+  syncError      String?
+  createdBy      String
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+
+  creator User                   @relation(fields: [createdBy], references: [id])
+  rows    GoogleSheetSourceRow[]
+  kpis    KPIDefinition[]
+}
+
+model GoogleSheetSourceRow {
+  id          String   @id @default(cuid())
+  sourceId    String
+  rowIndex    Int
+  data        String
+  contentHash String
+  updatedAt   DateTime @updatedAt
+
+  source GoogleSheetSource @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+
+  @@unique([sourceId, rowIndex])
+}
+
+model KPIDefinition {
+  id                      String     @id @default(cuid())
+  name                    String
+  sourceId                String
+  metricType              MetricType
+  filterConfig            String     @default("{\"conditions\":[]}")
+  denominatorFilterConfig String?
+  groupByHeader           String?
+  sumHeader               String?
+  dateHeader              String?
+  chartType               ChartType  @default(NUMBER_CARD)
+  displayOrder            Int        @default(0)
+  enabled                 Boolean    @default(true)
+  createdBy               String
+  createdAt               DateTime   @default(now())
+  updatedAt               DateTime   @updatedAt
+
+  source  GoogleSheetSource @relation(fields: [sourceId], references: [id])
+  creator User              @relation(fields: [createdBy], references: [id])
+  result  KPIResult?
+}
+
+model KPIResult {
+  id             String    @id @default(cuid())
+  kpiId          String    @unique
+  value          Float?
+  resultData     String    @default("[]")
+  calculatedAt   DateTime  @default(now())
+  sourceSyncedAt DateTime?
+
+  kpi KPIDefinition @relation(fields: [kpiId], references: [id], onDelete: Cascade)
+}
+
+/// 향후 모든 AI Provider(Google/OpenAI/Anthropic) 호출의 사용량·비용을 한 테이블에서
+/// 통합 관리한다. Provider별 별도 테이블을 만들지 않는다.
+model AIUsage {
+  id        String  @id @default(cuid())
+  userId    String
+  projectId String?
+
+  taskType AiTaskType
+  provider AiProvider
+  model    String
+
+  inputTokens      Int @default(0)
+  outputTokens     Int @default(0)
+  cacheReadTokens  Int @default(0)
+  cacheWriteTokens Int @default(0)
+
+  /// 가격 정보가 없는 모델은 0이 아니라 null로 저장한다 ("실제 비용 0" ≠ "가격 정보 없음").
+  calculatedCostUsd Float?
+
+  status    AiUsageStatus
+  errorCode String?
+
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([provider])
+  @@index([userId])
+  @@index([createdAt])
+}
+
+/// 팀 공통 Dashboard Layout 1개만 관리한다(사용자별 개인 Layout 아님).
+/// key="HOME_KPI" 단일 Row로 Home KPI Card 영역의 위치/크기를 저장한다.
+model DashboardLayout {
+  id         String   @id @default(cuid())
+  key        String   @unique
+  layoutData String
+  updatedBy  String
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  updater User @relation(fields: [updatedBy], references: [id])
+}
+
+/// 팀 공통 Sidebar Layout 1개만 관리한다(개인별 Layout 아님). DashboardLayout과 역할이
+/// 다르므로(Sidebar Menu/Group 위치 vs Home KPI Card 위치/크기) 같은 JSON에 섞지 않고
+/// 별도 Model로 관리한다. key="MAIN_SIDEBAR" 단일 Row에 Group/Menu의 "표시 위치"만
+/// 저장하며, "누가 볼 수 있는지"(권한)는 절대 여기 저장하지 않는다 — 권한은 항상
+/// lib/sidebar/sidebarConfig.ts의 requiredRole을 렌더링 시점에 다시 확인한다.
+model SidebarLayout {
+  id         String   @id @default(cuid())
+  key        String   @unique
+  layoutData String
+  updatedBy  String
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  updater User @relation(fields: [updatedBy], references: [id])
+}
+
+// ---------------- 일정관리(Schedule) ----------------
+// Task가 최상위 개념이며 일정 DB가 Single Source of Truth다. 지연 여부는 컬럼으로
+// 저장하지 않고 (dueDate < now && status != DONE)로 매 조회 시 계산한다.
+
+model Task {
+  id        String       @id @default(cuid())
+  title     String
+  category  TaskCategory
+  startDate DateTime
+  dueDate   DateTime
+  status    TaskStatus   @default(TODO)
+  /// Comment/Update 시스템(TaskComment) 도입 이전의 단순 메모 — 실사용 데이터가
+  /// 있을 수 있어 컬럼/값을 절대 지우거나 변환하지 않는다. 새 코드는 이 필드에
+  /// 더 이상 쓰지 않고("레거시 메모"로 읽기 전용 표시만), 새 업데이트/댓글은
+  /// 전부 TaskComment에 쌓인다.
+  memo      String?
+  createdBy String
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  /// 업무 구분 = PERSONAL_GOAL일 때만 쓰는 목표명. 필드 1개뿐이라 별도 Detail
+  /// 테이블 없이 Task 컬럼으로 둔다(memo와 같은 패턴).
+  goalName String?
+
+  /// "차번 업무 계획" 기능 자체는 UI/저장 로직에서 제거됐다. 이 컬럼들에 실제 값이
+  /// 있는 기존 Row가 있어(요청 시 확인됨) 컬럼을 지우지 않고 그대로 남겨둔다 —
+  /// 새 코드는 이 필드를 더 이상 읽거나 쓰지 않는다.
+  nextTaskName      String?
+  nextTaskStartDate DateTime?
+  nextTaskDueDate   DateTime?
+
+  /// 업무 구분 = HALF_DAY일 때만 쓰는 오전/오후 구분("AM"/"PM"). 필드 1개뿐이라
+  /// goalName과 같은 패턴으로 Task 컬럼에 직접 둔다.
+  halfDayPeriod String?
+
+  /// "지금까지 이 Task에 실제로 발급된 가장 큰 revisionNo"를 계속 기억하는
+  /// 단조 증가 카운터 — Revision을 삭제해도 절대 줄어들지 않는다. 새 Revision의
+  /// revisionNo는 항상 max(이 값, 현재 살아있는 Revision 중 최댓값) + 1로 계산해,
+  /// "1차/2차/3차 중 2차 삭제 → 다음 생성이 3차가 아니라 4차"가 되도록 강제한다
+  /// (요청사항: 삭제된 번호 재사용 금지). Soft Delete 대신 이 카운터 하나로
+  /// 해결해 Revision 조회/이력 표시 코드를 전부 "살아있는 Row만" 그대로 유지한다.
+  lastRevisionNo Int @default(0)
+
+  creator           User                   @relation("TaskCreator", fields: [createdBy], references: [id])
+  assignees         TaskAssignee[]
+  projectDetail     TaskProjectDetail?
+  meetingDetail     TaskMeetingDetail?
+  scheduleRevisions TaskScheduleRevision[]
+  comments          TaskComment[]
+  notifications     Notification[]
+
+  @@index([startDate])
+  @@index([dueDate])
+  @@index([category])
+}
+
+/// 담당자 다중 지정 — 명시적 Join Table로 둬야 Step 3(History/Notification)에서
+/// 담당자별 부가 컬럼(열람 여부 등)을 나중에 자유롭게 추가할 수 있다.
+model TaskAssignee {
+  id        String   @id @default(cuid())
+  taskId    String
+  userId    String
+  createdAt DateTime @default(now())
+
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id])
+
+  @@unique([taskId, userId])
+  @@index([userId])
+}
+
+/// 업무 구분 = PROJECT일 때만 존재하는 1:1 상세. pwStage(PW 단계)는 UI/저장 로직에서
+/// 제거됐지만 기존 실사용 데이터(PW3 등)가 남아 있어 컬럼 자체는 지우지 않고
+/// nullable로만 완화한다 — 새로 생성되는 Row는 null로 남는다.
+model TaskProjectDetail {
+  taskId      String  @id
+  projectName String
+  pwStage     String?
+  categoryId  String?
+
+  task     Task             @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  category ProjectCategory? @relation(fields: [categoryId], references: [id])
+}
+
+/// "프로젝트 카테고리" 사용자 관리형 Master. 사용 이력(TaskProjectDetail 참조)이
+/// 있으면 삭제 대신 active=false로 비활성화하고, Dropdown에는 active만 노출한다.
+model ProjectCategory {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  projectDetails TaskProjectDetail[]
+}
+
+/// 업무 구분 = MEETING일 때만 존재하는 1:1 상세. department(참석 부서)는 현재 User에
+/// 부서 개념이 없어 Free Text로 둔다.
+model TaskMeetingDetail {
+  taskId     String    @id
+  department String?
+  time       DateTime?
+  location   String?
+
+  task      Task                  @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  attendees TaskMeetingAttendee[]
+}
+
+/// 미팅 참석자 — 담당자(TaskAssignee)와 별개 개념이라 별도 Join Table로 관리한다.
+model TaskMeetingAttendee {
+  id            String @id @default(cuid())
+  meetingTaskId String
+  userId        String
+
+  meeting TaskMeetingDetail @relation(fields: [meetingTaskId], references: [taskId], onDelete: Cascade)
+  user    User              @relation(fields: [userId], references: [id])
+
+  @@unique([meetingTaskId, userId])
+}
+
+/// "+ 일정 변경"으로 만든 공식 일정 변경 이력. Drag&Drop/Resize 같은 미세조정은
+/// 새 Row를 만들지 않고 "가장 최신"(revisionNo 최대) Row만 그 자리에서 고쳐 쓴다 —
+/// 이 테이블에 쌓이는 Row 자체가 "사용자가 명시적으로 눌러 만든 공식 변경"만
+/// 의미하도록 하기 위함이다. Task.startDate/dueDate(원본)는 이 기능이 생긴 뒤에도
+/// 절대 덮어쓰지 않고 "최초 일정"으로 그대로 남는다 — Calendar가 표시할 "현재
+/// 유효 일정"은 매 조회 시 (Revision 있으면 최신 Revision, 없으면 Task 원본)으로
+/// 계산한다(별도 컬럼로 캐싱하지 않음).
+model TaskScheduleRevision {
+  id         String   @id @default(cuid())
+  taskId     String
+  /// Task별 1,2,3... 순번. 동시 생성 시 서버가 트랜잭션 안에서 max+1을 계산하고,
+  /// 그래도 경합이 나면 이 유니크 제약이 중복 생성을 막는 최종 방어선이다.
+  revisionNo Int
+  startDate  DateTime
+  dueDate    DateTime
+  /// 이 차수의 공식 변경 사유("+ 일정 변경" 입력 블록에서만 채워진다). Drag&Drop/
+  /// Resize(미세조정)는 절대 이 값을 채우거나 지우지 않는다 — 그래서 nullable이고,
+  /// 이 기능 이전에 만들어진 기존 Revision은 null로 남는다.
+  reasonText String?
+  createdBy  String
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  task    Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  creator User @relation("TaskScheduleRevisionCreator", fields: [createdBy], references: [id])
+
+  @@unique([taskId, revisionNo])
+  @@index([taskId])
+}
+
+/// Task.memo(단순 Free Text)를 대체하는 말풍선형 Comment/Update 시스템.
+/// parentId가 null이면 원문(최상위) Update, 값이 있으면 그 Update에 달린 답변이다
+/// — 답변의 답변(무한 nesting)은 이번 Step에서 만들지 않고 1단계로 제한한다
+/// (Client가 parentId로 "답변의 답변" id를 넘기지 못하도록 Server Action에서
+/// parent 자신이 이미 답변이면 거부한다).
+///
+/// contentJson(Tiptap의 JSON Document, 문자열로 저장)과 plainText(같은 내용의
+/// 순수 텍스트, 목록 미리보기·검색용)를 항상 함께 저장한다 — HTML 문자열 하나만
+/// Source of Truth로 두지 않는다(요청사항). 향후 @mention은 Tiptap 문서 안에
+/// mention node로 표현될 것이므로 contentJson 구조 자체는 이미 그 확장을 그대로
+/// 수용할 수 있다 — 이번 Step에서는 mention node/Notification을 만들지 않는다.
+model TaskComment {
+  id          String   @id @default(cuid())
+  taskId      String
+  authorId    String
+  parentId    String?
+  contentJson String
+  plainText   String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  task          Task           @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  author        User           @relation("TaskCommentAuthor", fields: [authorId], references: [id])
+  parent        TaskComment?   @relation("TaskCommentReplies", fields: [parentId], references: [id], onDelete: Cascade)
+  replies       TaskComment[]  @relation("TaskCommentReplies")
+  notifications Notification[]
+
+  @@index([taskId])
+  @@index([parentId])
+}
+
+/// @Mention 기반 Notification. 이번 Step에서는 type=MENTION만 실제로 생성한다
+/// (요청사항 4). taskId/commentId/actorId는 모두 nullable로 둬서 향후 다른
+/// type(TASK_CHANGED 등)이 Comment 없이도 알림을 만들 수 있게 열어둔다.
+///
+/// title/message는 발생 시점의 내용을 그대로 굳혀 저장한다(발신자 이름/Task
+/// 제목이 나중에 바뀌어도 과거 알림 문구는 변하지 않는다) — Bell 목록은 이
+/// 두 필드만 읽으면 되고 매번 Task/User를 다시 join할 필요가 없다.
+///
+/// @@unique([commentId, userId, type])로 "같은 Comment + 같은 대상 User"는
+/// MENTION 알림이 최대 1건만 존재하도록 DB 레벨에서 강제한다(요청사항 4의
+/// 중복 방지, 요청사항 5의 dedupe 구조) — Comment 수정으로 새 Mention이 추가돼도
+/// 이미 알림을 받은 대상은 이 제약 덕분에 다시 만들어지지 않는다. commentId가
+/// null인 향후 type들은 SQLite에서 NULL이 서로 다른 값으로 취급되어 이 제약의
+/// 영향을 받지 않는다.
+model Notification {
+  id        String           @id @default(cuid())
+  userId    String
+  type      NotificationType
+  taskId    String?
+  commentId String?
+  actorId   String?
+  title     String
+  message   String
+  isRead    Boolean          @default(false)
+  createdAt DateTime         @default(now())
+  readAt    DateTime?
+
+  user    User         @relation("NotificationUser", fields: [userId], references: [id], onDelete: Cascade)
+  task    Task?        @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  comment TaskComment? @relation(fields: [commentId], references: [id], onDelete: Cascade)
+  actor   User?        @relation("NotificationActor", fields: [actorId], references: [id])
+
+  @@unique([commentId, userId, type])
+  @@index([userId, isRead])
+  @@index([createdAt])
+}
