@@ -1,13 +1,25 @@
 "use client";
 
-import { useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { DashboardGrid, type DashboardKpiCard } from "@/components/dashboard/DashboardGrid";
 import { KpiDrilldownModal } from "@/components/kpi/KpiDrilldownModal";
 import { fetchKpiDrilldown, getHomeKpiCardsAction } from "@/app/(shell)/home/actions";
 import PeriodSelector from "@/components/period/PeriodSelector";
 import type { DrilldownResult } from "@/lib/kpiDrilldown";
 import type { DashboardLayoutItem } from "@/lib/dashboardLayout/types";
-import type { DashboardPeriod } from "@/lib/period";
+import { getAdjacentMonthPeriod, periodKey, type DashboardPeriod } from "@/lib/period";
+import { isSlowNetwork } from "@/lib/perf/network";
+
+interface KpiCardsPayload {
+  cards: DashboardKpiCard[];
+  years: number[];
+  cachedAt: number;
+}
+
+/** 선조회 값을 이 시간(ms)보다 오래 들고 있지 않는다 — 관리자가 KPI를
+ * 재계산해도 무한정 낡은 값을 보여주지 않기 위한 안전망(서버 memoCache의
+ * TTL과 같은 성격). */
+const ADJACENT_CACHE_TTL_MS = 5 * 60_000;
 
 interface ActiveDrilldown {
   kpiId: string;
@@ -57,18 +69,65 @@ export function HomeDashboard({
   const [refreshError, setRefreshError] = useState<string | null>(null);
   const [activeDrilldown, setActiveDrilldown] = useState<ActiveDrilldown | null>(null);
 
+  // 공통 성능 아키텍처(Previous/Next Data Prefetch, 7번) — idle 시 미리
+  // 가져와 둔 인접 period는 이 Map에 남는다. Ref라 값이 바뀌어도 리렌더를
+  // 일으키지 않는다(오직 캐시 저장 용도). 최초 period(initialPeriod)는
+  // 일부러 미리 채워 넣지 않는다 — Date.now() 같은 순수하지 않은 호출은
+  // Effect/핸들러 안에서만 하고 렌더 본문에서는 하지 않기 위함이며, 사용자가
+  // "처음 봤던 달"로 다시 돌아가는 드문 경우엔 그냥 한 번 더 조회할 뿐이다.
+  const kpiCacheRef = useRef<Map<string, KpiCardsPayload>>(new Map());
+
+  // 현재 월의 이전/다음 달을 브라우저가 한가할 때 미리 가져와 둔다(월별
+  // 모드에서만 "인접"이 명확하므로 range 모드는 대상에서 뺀다). 실시간성이
+  // 필요한 데이터가 아니라 안전하게 선조회할 수 있는 KPI 카드로 한정한다.
+  useEffect(() => {
+    if (isSlowNetwork()) return;
+
+    const win = window as Window & { requestIdleCallback?: (cb: () => void) => number };
+    const candidates = [getAdjacentMonthPeriod(period, -1), getAdjacentMonthPeriod(period, 1)].filter(
+      (p): p is DashboardPeriod => p !== null,
+    );
+
+    const run = () => {
+      for (const candidate of candidates) {
+        const key = periodKey(candidate);
+        if (kpiCacheRef.current.has(key)) continue;
+        getHomeKpiCardsAction(candidate).then((res) => {
+          if (!("error" in res)) kpiCacheRef.current.set(key, { ...res, cachedAt: Date.now() });
+        });
+      }
+    };
+
+    if (typeof win.requestIdleCallback === "function") {
+      win.requestIdleCallback(run);
+    } else {
+      const id = setTimeout(run, 1000);
+      return () => clearTimeout(id);
+    }
+  }, [period]);
+
   async function handlePeriodChange(nextPeriod: DashboardPeriod) {
     setPeriod(nextPeriod);
-    setRefreshing(true);
     setRefreshError(null);
 
-    const res = await getHomeKpiCardsAction(nextPeriod);
+    // 이미 idle 중에 미리 받아 둔 값이 있고 아직 안 낡았으면 서버를 기다리지
+    // 않고 즉시 반영한다.
+    const cached = kpiCacheRef.current.get(periodKey(nextPeriod));
+    if (cached && Date.now() - cached.cachedAt < ADJACENT_CACHE_TTL_MS) {
+      setCards(cached.cards);
+      setYears(cached.years);
+      return;
+    }
 
+    setRefreshing(true);
+    const res = await getHomeKpiCardsAction(nextPeriod);
     setRefreshing(false);
+
     if ("error" in res) {
       setRefreshError(res.error);
       return;
     }
+    kpiCacheRef.current.set(periodKey(nextPeriod), { ...res, cachedAt: Date.now() });
     setCards(res.cards);
     setYears(res.years);
   }

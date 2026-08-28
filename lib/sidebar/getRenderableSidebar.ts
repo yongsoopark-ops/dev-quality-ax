@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { cached } from "@/lib/cache/memoCache";
+import { requestMemo } from "@/lib/cache/requestMemo";
 import { mergeSidebarLayout } from "@/lib/sidebar/mergeSidebarLayout";
 import { getGroupById, getMenuById, SIDEBAR_MENUS } from "@/lib/sidebar/sidebarConfig";
 import { SIDEBAR_LAYOUT_KEY, type RenderableSidebarGroup, type SidebarLayoutData } from "@/lib/sidebar/types";
@@ -25,8 +26,12 @@ function isVisible(requiredRole: Role | null, role: Role): boolean {
  * 바뀐다. 위치 데이터만 60초 캐시하고, Role 필터링(3번)은 캐시와 무관하게
  * 매번 이 함수 호출 시점의 role 인자로 새로 계산한다 — 권한 판단 자체는
  * 캐시되지 않는다.
+ *
+ * requestMemo로 감싸 request-level(17번)로도 중복을 없앤다 — 지금은
+ * SidebarData.tsx 한 곳에서만 부르지만, 앞으로 같은 Request 안에서 다른
+ * Server Component가 같은 role로 또 부르더라도 실제 계산은 1번만 일어난다.
  */
-export async function getRenderableSidebar(role: Role): Promise<{
+async function getRenderableSidebarImpl(role: Role): Promise<{
   fixedMenus: { id: string; label: string; href: string }[];
   groups: RenderableSidebarGroup[];
 }> {
@@ -55,3 +60,5 @@ export async function getRenderableSidebar(role: Role): Promise<{
 
   return { fixedMenus, groups };
 }
+
+export const getRenderableSidebar = requestMemo(getRenderableSidebarImpl);

@@ -2,8 +2,8 @@
 
 import { useState } from "react";
 import Image from "next/image";
-import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { SmartLink } from "@/components/nav/SmartLink";
 import type { Session } from "next-auth";
 import {
   DndContext,
@@ -92,10 +92,10 @@ function SortableMenuRow({
           {menu.label}
         </span>
       ) : (
-        <Link href={menu.href} className={navLinkClass(active)}>
+        <SmartLink href={menu.href} className={navLinkClass(active)}>
           <span className="h-2 w-2 rounded-full bg-current" />
           {menu.label}
-        </Link>
+        </SmartLink>
       )}
     </div>
   );
@@ -305,10 +305,10 @@ export default function Sidebar({
 
       <nav className="flex-1 space-y-1 px-3 py-2">
         {fixedMenus.map((menu) => (
-          <Link key={menu.id} href={menu.href} className={navLinkClass(isActiveHref(menu.href, pathname))}>
+          <SmartLink key={menu.id} href={menu.href} className={navLinkClass(isActiveHref(menu.href, pathname))}>
             <span className="h-2 w-2 rounded-full bg-current" />
             {menu.label}
-          </Link>
+          </SmartLink>
         ))}
 
         {isAdmin && (

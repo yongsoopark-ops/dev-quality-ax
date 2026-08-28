@@ -125,6 +125,25 @@ export function getComparisonLabel(period: DashboardPeriod): string {
   return period.mode === "month" ? "전월 대비" : "직전 기간 대비";
 }
 
+/**
+ * 공통 성능 아키텍처 — Previous/Next Data Prefetch(7번)에서 쓰는 "이동 방향"
+ * 계산이다(비교 대상 기간을 구하는 getPreviousComparisonPeriod와는 목적이
+ * 다르다 — 이건 "다음/이전 달로 이동했을 때의 실제 period"). 월별 모드에서만
+ * 의미가 있고, 기간(range) 모드는 null을 반환한다(범위가 다양해 "인접"의
+ * 의미가 명확하지 않기 때문 — 이번 Step에서는 범위 모드까지 확장하지 않는다).
+ */
+export function getAdjacentMonthPeriod(period: DashboardPeriod, delta: 1 | -1): DashboardPeriod | null {
+  if (period.mode !== "month") return null;
+  const adjacent = fromMonthIndex(toMonthIndex(period.year, period.month) + delta);
+  return { mode: "month", year: adjacent.year, month: adjacent.month };
+}
+
+/** 캐시 Map 등에서 period를 식별할 안정적인 문자열 키. */
+export function periodKey(period: DashboardPeriod): string {
+  if (period.mode === "month") return `month:${period.year}-${period.month}`;
+  return `range:${period.fromYear}-${period.fromMonth}:${period.toYear}-${period.toMonth}`;
+}
+
 // "2026-07-15", "2026/7/15", "2026.7.15" (뒤에 시각이 붙어도 허용)
 const YMD_PATTERN = /^(\d{4})\s*[-/.]\s*(\d{1,2})\s*[-/.]\s*(\d{1,2})/;
 // "2025. 2", "2025-7", "2025/07" 처럼 연/월까지만 기록된 경우 (일자 없음 → 1일로 간주)

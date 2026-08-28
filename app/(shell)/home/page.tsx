@@ -7,6 +7,7 @@ import { mergeDashboardLayout } from "@/lib/dashboardLayout/mergeLayout";
 import { DASHBOARD_LAYOUT_CACHE_KEY, HOME_LAYOUT_KEY, type DashboardLayoutItem } from "@/lib/dashboardLayout/types";
 import { KPI_DEFINITIONS_CACHE_KEY } from "@/lib/kpiEngine";
 import { computeKpiCardsForPeriod } from "@/lib/home/computeKpiCards";
+import { withTiming } from "@/lib/perf/timing";
 import { parseDashboardPeriod } from "@/lib/period";
 import { MonthlyApiUsageCard } from "@/components/api/MonthlyApiUsageCard";
 import { getMonthlyApiUsageSummary } from "@/lib/ai/usageSummary";
@@ -70,7 +71,8 @@ export default async function HomePage({
     cached(DASHBOARD_LAYOUT_CACHE_KEY, 60_000, () => prisma.dashboardLayout.findUnique({ where: { key: HOME_LAYOUT_KEY } })),
   ]);
 
-  const { cards, years } = await computeKpiCardsForPeriod(kpis, period);
+  // Performance Observability(26번) 사용 예 — 개발 환경에서만 소요 시간을 남긴다.
+  const { cards, years } = await withTiming("home:computeKpiCards", () => computeKpiCardsForPeriod(kpis, period));
 
   const savedItems: DashboardLayoutItem[] | null = savedLayoutRow
     ? JSON.parse(savedLayoutRow.layoutData)

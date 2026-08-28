@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import dynamic from "next/dynamic";
+import { usePrefetchOnIntent } from "@/hooks/usePrefetchOnIntent";
 import { TaskCategory, TaskStatus } from "@/app/generated/prisma/enums";
 import {
   HALF_DAY_PERIOD_LABELS,
@@ -715,6 +716,14 @@ export function TaskDetailPanel({
   const [commentsLoading, setCommentsLoading] = useState(false);
   const [commentsError, setCommentsError] = useState<string | null>(null);
   const [showUpdateModal, setShowUpdateModal] = useState(initialShowUpdateModal ?? false);
+  // 공통 성능 아키텍처(Heavy Component Preload, 15번) — "업데이트" 버튼에
+  // hover/focus 의도가 보이면 UpdateModal(Tiptap 포함) chunk를 미리
+  // 내려받는다. Comment/Reply 데이터 자체는 건드리지 않는다 — 그 로직은
+  // 기존 그대로(showUpdateModal true일 때의 useEffect)이고, 여기서는 JS
+  // chunk 선로딩만 한다.
+  const updateModalPreload = usePrefetchOnIntent(() => {
+    import("./UpdateModal");
+  });
   const commentTotalCount = commentsLoaded
     ? comments.reduce((sum, c) => sum + 1 + c.replies.length, 0)
     : (task?.commentCount ?? 0);
@@ -850,6 +859,9 @@ export function TaskDetailPanel({
               <button
                 type="button"
                 onClick={() => setShowUpdateModal(true)}
+                onMouseEnter={updateModalPreload.onMouseEnter}
+                onFocus={updateModalPreload.onFocus}
+                onTouchStart={updateModalPreload.onTouchStart}
                 className="flex items-center gap-1 rounded-full border border-navy-100 px-2.5 py-1 text-xs font-medium text-navy-950/70 hover:bg-navy-50"
               >
                 <span aria-hidden>💬</span> 업데이트 {commentTotalCount}
