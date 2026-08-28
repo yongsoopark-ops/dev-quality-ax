@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import dynamic from "next/dynamic";
 import { TaskCategory, TaskStatus } from "@/app/generated/prisma/enums";
 import {
   HALF_DAY_PERIOD_LABELS,
@@ -37,7 +38,20 @@ import {
 } from "./actions";
 import { DateTextInput } from "./DateTextInput";
 import { TimeSelect } from "./TimeSelect";
-import { UpdateModal } from "./UpdateModal";
+
+/** 전역 성능 Step(JS Bundle 축소) — UpdateModal은 Tiptap(RichTextEditor)을 정적
+ * import하는데, 이 Modal은 "업데이트" 버튼을 눌러야만 실제로 열린다. 여기서
+ * 정적 import 대신 next/dynamic으로 불러오면 Tiptap 번들이 /schedule 최초
+ * 로드에 포함되지 않고 Modal을 여는 시점에만 별도 chunk로 내려온다. 기능/동작은
+ * 완전히 동일하다 — 코드 분할 방식만 바뀐다. */
+const UpdateModal = dynamic(() => import("./UpdateModal").then((m) => m.UpdateModal), {
+  ssr: false,
+  loading: () => (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30">
+      <div className="rounded-xl bg-white px-6 py-4 text-sm text-navy-950/60 shadow-lg">불러오는 중...</div>
+    </div>
+  ),
+});
 
 /** ISO(UTC) 문자열을 로컬 "YYYY-MM-DD"/"HH:mm"로 각각 나눈다 — 미팅 날짜/시작
  * 시간 두 입력으로 쪼갠 것뿐, 저장 시(actions.ts) 다시 하나로 합친다. */

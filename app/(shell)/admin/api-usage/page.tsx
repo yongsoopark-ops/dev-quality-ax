@@ -26,10 +26,26 @@ function formatCost(value: number | null) {
 }
 
 export default async function AdminApiUsagePage() {
+  // 전역 성능 Step(select 최소화): user는 name/email만 화면에 쓰므로 전체
+  // User Row 대신 그 2개 필드만 함께 가져온다.
   const records = await prisma.aIUsage.findMany({
     orderBy: { createdAt: "desc" },
-    include: { user: true },
     take: 200,
+    select: {
+      id: true,
+      createdAt: true,
+      taskType: true,
+      provider: true,
+      model: true,
+      inputTokens: true,
+      outputTokens: true,
+      cacheReadTokens: true,
+      cacheWriteTokens: true,
+      calculatedCostUsd: true,
+      status: true,
+      errorCode: true,
+      user: { select: { name: true, email: true } },
+    },
   });
 
   return (

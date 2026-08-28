@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname } from "next/navigation";
 import type { DashboardPeriod } from "@/lib/period";
 
 const MONTHS = Array.from({ length: 12 }, (_, i) => i + 1);
@@ -37,11 +37,15 @@ function toDraft(period: DashboardPeriod): RangeDraft {
 export default function PeriodSelector({
   period,
   years,
+  onChange,
 }: {
   period: DashboardPeriod;
   years: number[];
+  /** 전역 성능 Step(Home 월 이동 부분 갱신): 더 이상 router.push로 전체 Route를
+   * 재요청하지 않는다 — 새 period를 이 콜백으로만 올려보내면 호출부(HomeDashboard)가
+   * getHomeKpiCardsAction으로 KPI 영역만 다시 채운다. */
+  onChange: (period: DashboardPeriod) => void;
 }) {
-  const router = useRouter();
   const pathname = usePathname();
   const [rangeDraft, setRangeDraft] = useState<RangeDraft>(() => toDraft(period));
   const [prevPeriod, setPrevPeriod] = useState(period);
@@ -55,14 +59,30 @@ export default function PeriodSelector({
     }
   }
 
+  /** Next Router를 거치지 않고 주소창 URL만 맞춘다 — router.push/replace는 App
+   * Router에서 항상 서버에 현재 Route를 다시 요청하므로(Shallow Routing 없음),
+   * 여기서는 순수 브라우저 History API로만 동기화해 서버 왕복을 만들지 않는다.
+   * 새로고침/북마크/공유 시에는 이 URL 그대로 home/page.tsx가 다시 읽는다. */
+  function syncUrl(qs: string) {
+    window.history.replaceState(null, "", qs ? `${pathname}?${qs}` : pathname);
+  }
+
   function goMonth(year: number, month: number) {
-    router.push(`${pathname}?date=${monthParam(year, month)}`);
+    const next: DashboardPeriod = { mode: "month", year, month };
+    onChange(next);
+    syncUrl(`date=${monthParam(year, month)}`);
   }
 
   function goRange(draft: RangeDraft) {
-    router.push(
-      `${pathname}?from=${monthParam(draft.fromYear, draft.fromMonth)}&to=${monthParam(draft.toYear, draft.toMonth)}`,
-    );
+    const next: DashboardPeriod = {
+      mode: "range",
+      fromYear: draft.fromYear,
+      fromMonth: draft.fromMonth,
+      toYear: draft.toYear,
+      toMonth: draft.toMonth,
+    };
+    onChange(next);
+    syncUrl(`from=${monthParam(draft.fromYear, draft.fromMonth)}&to=${monthParam(draft.toYear, draft.toMonth)}`);
   }
 
   function shiftMonth(delta: number) {

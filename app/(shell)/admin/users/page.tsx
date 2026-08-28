@@ -2,7 +2,11 @@ import { prisma } from "@/lib/prisma";
 import { addUserAction, updateRoleAction, updateStatusAction } from "./actions";
 
 export default async function AdminUsersPage() {
-  const users = await prisma.user.findMany({ orderBy: { createdAt: "asc" } });
+  // 전역 성능 Step(select 최소화): 화면에 실제로 쓰는 필드만 가져온다.
+  const users = await prisma.user.findMany({
+    orderBy: { createdAt: "asc" },
+    select: { id: true, name: true, email: true, role: true, status: true, createdAt: true },
+  });
 
   return (
     <div className="p-8">

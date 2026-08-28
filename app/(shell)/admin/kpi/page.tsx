@@ -29,11 +29,26 @@ function parseResultData(raw: string | undefined | null): { label: string; value
 }
 
 export default async function AdminKpiPage() {
+  // 전역 성능 Step(select 최소화): source/result는 화면에 쓰는 필드만 함께 가져온다.
   const [connectedSources, kpiRows] = await Promise.all([
     prisma.googleSheetSource.findMany({ where: { syncStatus: "CONNECTED" } }),
     prisma.kPIDefinition.findMany({
       orderBy: { displayOrder: "asc" },
-      include: { source: true, result: true },
+      select: {
+        id: true,
+        name: true,
+        sourceId: true,
+        metricType: true,
+        chartType: true,
+        groupByHeader: true,
+        sumHeader: true,
+        dateHeader: true,
+        filterConfig: true,
+        denominatorFilterConfig: true,
+        enabled: true,
+        source: { select: { name: true } },
+        result: { select: { value: true, resultData: true, calculatedAt: true } },
+      },
     }),
   ]);
 

@@ -6,11 +6,14 @@ import { isPeriodHeaderCandidate } from "@/lib/period";
 /** /home page.tsx가 "enabled=true KPIDefinition+result" 조회를 캐시할 때 쓰는 키. */
 export const KPI_DEFINITIONS_CACHE_KEY = "kpi-definitions-with-results";
 
-/** GoogleSheetSourceRow 캐시를 읽는다. Google API를 호출하지 않는다. */
+/** GoogleSheetSourceRow 캐시를 읽는다. Google API를 호출하지 않는다.
+ * 전역 성능 Step(select 최소화): 실제로 쓰는 건 data(JSON) 하나뿐이라
+ * id/contentHash/updatedAt 등 나머지 필드는 가져오지 않는다. */
 export async function loadCachedRows(sourceId: string): Promise<Record<string, string>[]> {
   const rows = await prisma.googleSheetSourceRow.findMany({
     where: { sourceId },
     orderBy: { rowIndex: "asc" },
+    select: { data: true },
   });
   return rows.map((row) => JSON.parse(row.data) as Record<string, string>);
 }
@@ -21,6 +24,7 @@ export async function getPeriodHeaders(sourceId: string, headers: string[]) {
     where: { sourceId },
     orderBy: { rowIndex: "asc" },
     take: 20,
+    select: { data: true },
   });
   const parsed = rows.map((row) => JSON.parse(row.data) as Record<string, string>);
 
