@@ -1,8 +1,10 @@
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
+import { cached } from "@/lib/cache/memoCache";
 import { HomeDashboard } from "@/components/dashboard/HomeDashboard";
 import { mergeDashboardLayout } from "@/lib/dashboardLayout/mergeLayout";
-import { HOME_LAYOUT_KEY, type DashboardLayoutItem } from "@/lib/dashboardLayout/types";
+import { DASHBOARD_LAYOUT_CACHE_KEY, HOME_LAYOUT_KEY, type DashboardLayoutItem } from "@/lib/dashboardLayout/types";
+import { KPI_DEFINITIONS_CACHE_KEY } from "@/lib/kpiEngine";
 import { loadCachedRows, parseFilterConfig } from "@/lib/kpiEngine";
 import { calculateKpi, type KpiCalcConfig } from "@/lib/kpiCalculator";
 import { calculateKpiComparison, type KpiComparison } from "@/lib/kpiComparison";
@@ -45,26 +47,37 @@ export default async function HomePage({
   const previousRange = getDashboardPeriodRange(previousPeriod);
   const comparisonLabel = getComparisonLabel(period);
 
-  // 성능 개선(진단 Step 근거): 아래 4개는 서로 독립적인 조회라 순서대로 await하지
+  // 성능 개선(진단 Step 근거): 아래 3개는 서로 독립적인 조회라 순서대로 await하지
   // 않고 Promise.all로 병렬 실행한다 — 이전에는 하나씩 기다려 왕복 시간이 그대로
   // 합산됐다. activeUsers(ACTIVE User 목록)는 API 사용료 집계와 팀 연결 상태
   // 계산이 둘 다 필요로 하는 값이라 여기서 한 번만 조회해 두 함수에 그대로
   // 넘긴다 — 기존에는 두 함수가 각자 User 테이블을 따로 조회해 같은 요청 안에서
-  // 똑같은 조회가 중복됐다.
+  // 똑같은 조회가 중복됐다. activeUsers는 Presence(lastActiveAt 등)를 포함해
+  // 실시간성이 필요하므로 캐시하지 않고 항상 즉시 조회한다.
+  //
+  // 전역 구조 점검 Step: kpis/savedLayoutRow는 월(period) 이동 시에도 그 값
+  // 자체는 바뀌지 않는데(period 필터링은 아래에서 캐시된 GoogleSheetSourceRow를
+  // 메모리에서 다시 계산하는 것뿐), 기존에는 PeriodSelector가 URL을 바꿀 때마다
+  // 페이지 전체가 다시 렌더링되며 두 쿼리도 매번 다시 나갔다. 이 둘은 각자
+  // ADMIN이 저장/재계산할 때만 바뀌므로(lib/kpiEngine.ts recalculateKpi,
+  // lib/dashboardLayout/actions.ts saveDashboardLayout — 저장 즉시 캐시 무효화)
+  // 60초 캐시로 안전하게 재사용한다.
   const [activeUsers, kpis, savedLayoutRow] = await Promise.all([
     prisma.user.findMany({
       where: { status: "ACTIVE" },
       select: { id: true, name: true, email: true, lastActiveAt: true, lastHeartbeatAt: true },
     }),
     // Google API를 호출하지 않는다. 미리 계산되어 저장된 KPIResult / 캐시(GoogleSheetSourceRow)만 사용한다.
-    prisma.kPIDefinition.findMany({
-      where: { enabled: true },
-      orderBy: { displayOrder: "asc" },
-      include: { result: true },
-    }),
+    cached(KPI_DEFINITIONS_CACHE_KEY, 60_000, () =>
+      prisma.kPIDefinition.findMany({
+        where: { enabled: true },
+        orderBy: { displayOrder: "asc" },
+        include: { result: true },
+      }),
+    ),
     // Dashboard Layout도 KPI 계산과 완전히 독립적이라 함께 병렬화한다(기존에는
     // KPI 계산이 다 끝난 뒤에야 순서대로 조회했다).
-    prisma.dashboardLayout.findUnique({ where: { key: HOME_LAYOUT_KEY } }),
+    cached(DASHBOARD_LAYOUT_CACHE_KEY, 60_000, () => prisma.dashboardLayout.findUnique({ where: { key: HOME_LAYOUT_KEY } })),
   ]);
 
   // API 사용료 요약은 Home의 KPI 기간 선택(period)과 무관하게 항상 실제 현재 월 기준이다.

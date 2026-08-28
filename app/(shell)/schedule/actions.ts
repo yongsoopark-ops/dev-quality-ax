@@ -3,6 +3,8 @@
 import { revalidatePath } from "next/cache";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
+import { invalidateCache } from "@/lib/cache/memoCache";
+import { PROJECT_CATEGORIES_CACHE_KEY } from "@/lib/schedule/constants";
 import { NotificationType, TaskCategory } from "@/app/generated/prisma/enums";
 import { Prisma } from "@/app/generated/prisma/client";
 import { resolveMentionedUserIds } from "@/lib/schedule/mention";
@@ -731,6 +733,7 @@ export async function createProjectCategoryAction(
   if (existing) {
     if (!existing.active) {
       const reactivated = await prisma.projectCategory.update({ where: { id: existing.id }, data: { active: true } });
+      invalidateCache(PROJECT_CATEGORIES_CACHE_KEY);
       revalidatePath("/schedule");
       return { category: reactivated };
     }
@@ -738,6 +741,7 @@ export async function createProjectCategoryAction(
   }
 
   const category = await prisma.projectCategory.create({ data: { name: trimmed } });
+  invalidateCache(PROJECT_CATEGORIES_CACHE_KEY);
   revalidatePath("/schedule");
   return { category };
 }
@@ -751,11 +755,13 @@ export async function removeProjectCategoryAction(
   const usageCount = await prisma.taskProjectDetail.count({ where: { categoryId: id } });
   if (usageCount > 0) {
     await prisma.projectCategory.update({ where: { id }, data: { active: false } });
+    invalidateCache(PROJECT_CATEGORIES_CACHE_KEY);
     revalidatePath("/schedule");
     return { deactivated: true };
   }
 
   await prisma.projectCategory.delete({ where: { id } });
+  invalidateCache(PROJECT_CATEGORIES_CACHE_KEY);
   revalidatePath("/schedule");
   return { ok: true };
 }
@@ -766,6 +772,7 @@ export async function toggleProjectCategoryActiveAction(
 ): Promise<{ ok?: true; error?: string }> {
   await requireUser();
   await prisma.projectCategory.update({ where: { id }, data: { active } });
+  invalidateCache(PROJECT_CATEGORIES_CACHE_KEY);
   revalidatePath("/schedule");
   return { ok: true };
 }

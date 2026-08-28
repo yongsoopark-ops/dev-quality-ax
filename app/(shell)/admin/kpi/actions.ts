@@ -3,7 +3,8 @@
 import { revalidatePath } from "next/cache";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
-import { loadCachedRows, recalculateKpi } from "@/lib/kpiEngine";
+import { invalidateCache } from "@/lib/cache/memoCache";
+import { KPI_DEFINITIONS_CACHE_KEY, loadCachedRows, recalculateKpi } from "@/lib/kpiEngine";
 import {
   calculateKpi,
   type ChartType,
@@ -165,6 +166,7 @@ export async function toggleKpiEnabledAction(formData: FormData) {
 
   await prisma.kPIDefinition.update({ where: { id }, data: { enabled } });
 
+  invalidateCache(KPI_DEFINITIONS_CACHE_KEY);
   revalidatePath("/admin/kpi");
   revalidatePath("/home");
 }
@@ -177,6 +179,7 @@ export async function deleteKpiAction(formData: FormData) {
 
   await prisma.kPIDefinition.delete({ where: { id } });
 
+  invalidateCache(KPI_DEFINITIONS_CACHE_KEY);
   revalidatePath("/admin/kpi");
   revalidatePath("/home");
 }

@@ -3,8 +3,9 @@
 import { revalidatePath } from "next/cache";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
+import { invalidateCache } from "@/lib/cache/memoCache";
 import { validateLayoutData } from "@/lib/dashboardLayout/validate";
-import { HOME_LAYOUT_KEY, type DashboardLayoutItem } from "@/lib/dashboardLayout/types";
+import { DASHBOARD_LAYOUT_CACHE_KEY, HOME_LAYOUT_KEY, type DashboardLayoutItem } from "@/lib/dashboardLayout/types";
 
 /**
  * ADMIN이 편집한 공통 Home Dashboard Layout을 저장한다.
@@ -46,6 +47,7 @@ export async function saveDashboardLayout(
     return { error: "레이아웃 저장에 실패했습니다. 잠시 후 다시 시도해 주세요." };
   }
 
+  invalidateCache(DASHBOARD_LAYOUT_CACHE_KEY);
   revalidatePath("/home");
   return { ok: true };
 }

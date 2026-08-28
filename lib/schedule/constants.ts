@@ -1,5 +1,10 @@
 import { TaskCategory, TaskStatus } from "@/app/generated/prisma/enums";
 
+/** /schedule page.tsx가 ProjectCategory 목록을 캐시할 때 쓰는 키. "use server"
+ * 파일(actions.ts)은 함수 외의 export를 허용하지 않아 여기 둔다. 저장 계열
+ * 함수(createProjectCategoryAction 등) 3곳이 저장 직후 이 키로 무효화한다. */
+export const PROJECT_CATEGORIES_CACHE_KEY = "project-categories";
+
 export const TASK_CATEGORY_LABELS: Record<TaskCategory, string> = {
   PROJECT: "프로젝트",
   PERSONAL_GOAL: "개인 목표",

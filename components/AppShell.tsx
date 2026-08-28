@@ -1,26 +1,28 @@
+import { Suspense } from "react";
 import type { Session } from "next-auth";
-import Sidebar from "@/components/Sidebar";
+import { SidebarData } from "@/components/SidebarData";
+import { SidebarSkeleton } from "@/components/SidebarSkeleton";
 import { PresenceTracker } from "@/components/presence/PresenceTracker";
 import { NotificationBell } from "@/components/notifications/NotificationBell";
-import type { RenderableSidebarGroup } from "@/lib/sidebar/types";
 
 export default function AppShell({
   children,
   session,
-  sidebar,
 }: {
   children: React.ReactNode;
   session: Session | null;
-  sidebar: {
-    fixedMenus: { id: string; label: string; href: string }[];
-    groups: RenderableSidebarGroup[];
-  };
 }) {
   return (
     <div className="flex min-h-screen flex-col bg-white md:flex-row">
       {session?.user && <PresenceTracker />}
       {session?.user && <NotificationBell />}
-      <Sidebar session={session} fixedMenus={sidebar.fixedMenus} initialGroups={sidebar.groups} />
+      {/* 전역 구조 점검 Step: Sidebar의 SidebarLayout 조회를 Suspense로 감싸
+          children과 분리했다 — Sidebar가 늦어도 페이지 본문은 기다리지 않는다. */}
+      {session?.user ? (
+        <Suspense fallback={<SidebarSkeleton />}>
+          <SidebarData session={session} />
+        </Suspense>
+      ) : null}
       <main className="flex-1">{children}</main>
     </div>
   );

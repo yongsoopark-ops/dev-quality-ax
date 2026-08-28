@@ -4,9 +4,7 @@
  * /home Server Component 렌더(및 그 안의 DB 조회)가 끝날 때까지 자동으로 보여준다.
  * 과도한 애니메이션 없이 옅은 펄스만 준다 — 기존 AX Navy 톤 그대로.
  */
-function SkeletonBlock({ className = "" }: { className?: string }) {
-  return <div className={`animate-pulse rounded-md bg-navy-100/60 ${className}`} />;
-}
+import { SkeletonBlock } from "@/components/ui/SkeletonBlock";
 
 export default function HomeLoading() {
   return (

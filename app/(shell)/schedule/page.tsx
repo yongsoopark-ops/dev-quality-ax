@@ -1,6 +1,8 @@
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
+import { cached } from "@/lib/cache/memoCache";
 import type { TaskWithRelations } from "@/lib/schedule/types";
+import { PROJECT_CATEGORIES_CACHE_KEY } from "@/lib/schedule/constants";
 import { ScheduleClient } from "./ScheduleClient";
 
 export default async function SchedulePage({
@@ -52,7 +54,10 @@ export default async function SchedulePage({
       orderBy: { name: "asc" },
       select: { id: true, name: true, email: true },
     }),
-    prisma.projectCategory.findMany({ orderBy: { name: "asc" } }),
+    // 전역 구조 점검 Step: ProjectCategory는 Task Form에서 추가/삭제/비활성화할
+    // 때만 바뀌고(schedule/actions.ts 3개 함수가 저장 즉시 캐시 무효화), Task
+    // 목록만큼 자주 바뀌지 않으므로 60초 캐시로 재사용한다.
+    cached(PROJECT_CATEGORIES_CACHE_KEY, 60_000, () => prisma.projectCategory.findMany({ orderBy: { name: "asc" } })),
   ]);
 
   const tasksForClient: TaskWithRelations[] = tasks.map((task) => {

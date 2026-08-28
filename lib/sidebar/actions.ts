@@ -3,8 +3,10 @@
 import { revalidatePath } from "next/cache";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
+import { invalidateCache } from "@/lib/cache/memoCache";
 import { validateSidebarLayoutData } from "@/lib/sidebar/validateSidebarLayout";
 import { SIDEBAR_LAYOUT_KEY } from "@/lib/sidebar/types";
+import { SIDEBAR_LAYOUT_CACHE_KEY } from "@/lib/sidebar/getRenderableSidebar";
 import type { SidebarLayoutData } from "@/lib/sidebar/types";
 
 /**
@@ -42,6 +44,7 @@ export async function saveSidebarLayout(
     return { error: "저장에 실패했습니다. 잠시 후 다시 시도해 주세요." };
   }
 
+  invalidateCache(SIDEBAR_LAYOUT_CACHE_KEY);
   revalidatePath("/", "layout");
   return { ok: true };
 }

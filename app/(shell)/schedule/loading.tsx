@@ -2,9 +2,7 @@
  * 성능 개선(진단 Step 근거) — /home/loading.tsx와 같은 목적/같은 톤의 최소
  * Skeleton. /schedule Server Component의 DB 조회가 끝날 때까지 자동으로 뜬다.
  */
-function SkeletonBlock({ className = "" }: { className?: string }) {
-  return <div className={`animate-pulse rounded-md bg-navy-100/60 ${className}`} />;
-}
+import { SkeletonBlock } from "@/components/ui/SkeletonBlock";
 
 export default function ScheduleLoading() {
   return (

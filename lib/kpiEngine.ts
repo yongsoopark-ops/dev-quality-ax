@@ -1,6 +1,10 @@
 import { prisma } from "@/lib/prisma";
+import { invalidateCache } from "@/lib/cache/memoCache";
 import { calculateKpi, type FilterCondition, type KpiCalcConfig } from "@/lib/kpiCalculator";
 import { isPeriodHeaderCandidate } from "@/lib/period";
+
+/** /home page.tsx가 "enabled=true KPIDefinition+result" 조회를 캐시할 때 쓰는 키. */
+export const KPI_DEFINITIONS_CACHE_KEY = "kpi-definitions-with-results";
 
 /** GoogleSheetSourceRow 캐시를 읽는다. Google API를 호출하지 않는다. */
 export async function loadCachedRows(sourceId: string): Promise<Record<string, string>[]> {
@@ -69,6 +73,8 @@ export async function recalculateKpi(kpiId: string) {
       sourceSyncedAt: source?.lastSyncedAt ?? null,
     },
   });
+
+  invalidateCache(KPI_DEFINITIONS_CACHE_KEY);
 }
 
 /** 특정 Source를 참조하는 KPI만 재계산한다. 다른 Source의 KPI는 건드리지 않는다. */
