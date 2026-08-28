@@ -54,7 +54,22 @@ export interface TaskCommentInfo {
   replies: TaskCommentInfo[];
 }
 
-/** page.tsx가 Prisma Task(+관계)를 Client Component에 넘기기 전 만드는 직렬화 가능한 모양. */
+/**
+ * page.tsx가 Prisma Task(+관계)를 Client Component에 넘기기 전 만드는 직렬화
+ * 가능한 모양. 성능 개선(초기 /schedule 조회 경량화)에 따라 이 shape 전체가
+ * 처음부터 채워져 오지 않는다 — page.tsx의 초기 목록 조회는 Calendar/Filter가
+ * 실제로 쓰는 필드만 채우고, 아래 필드들은 "가벼운 기본값"으로 시작해 필요한
+ * 시점에만 lazy load로 채워진다(기존 코드가 그대로 쓸 수 있도록 shape 자체는
+ * 유지하고, 값을 채우는 시점만 나눈다):
+ *
+ * - memo/halfDayPeriod/originalStartDate/originalDueDate/projectDetail.categoryId/
+ *   meetingDetail/scheduleRevisions: Task Modal을 열 때 getTaskDetailAction으로
+ *   채워진다(그 전까지는 originalStartDate/DueDate=startDate/dueDate와 동일한
+ *   임시값, 나머지는 null/[] 기본값).
+ * - comments: Update Modal을 열 때 getTaskCommentsAction으로 채워진다(그 전까지는
+ *   []) — "💬 업데이트 N" 배지는 그 전까지 아래 commentCount(가벼운 _count 조회)를
+ *   대신 쓴다.
+ */
 export interface TaskWithRelations {
   id: string;
   title: string;
@@ -63,7 +78,8 @@ export interface TaskWithRelations {
    * 동일하다. Calendar/Drag/Resize는 항상 이 값만 본다. */
   startDate: string;
   dueDate: string;
-  /** Task 원본(불변) — "+ 일정 변경"이 생겨도 절대 덮어쓰지 않는 "최초 일정" 표시용. */
+  /** Task 원본(불변) — "+ 일정 변경"이 생겨도 절대 덮어쓰지 않는 "최초 일정" 표시용.
+   * Task Modal을 열기 전까지는 startDate/dueDate와 같은 임시값이다. */
   originalStartDate: string;
   originalDueDate: string;
   status: TaskStatus;
@@ -72,6 +88,8 @@ export interface TaskWithRelations {
   halfDayPeriod: string | null;
   /** Week View 담당자 Swimlane 배치에 쓴다 — 신규 생성 시 로그인 계정으로 자동 지정된다. */
   assigneeIds: string[];
+  /** projectName은 Calendar Title 생성에 필요해 초기 조회에도 항상 포함되지만,
+   * categoryId는 Task Modal을 열 때만(getTaskDetailAction) 채워진다 — 그 전까지 null. */
   projectDetail: { projectName: string; categoryId: string | null } | null;
   meetingDetail: {
     department: string | null;
@@ -83,6 +101,27 @@ export interface TaskWithRelations {
   scheduleRevisions: TaskScheduleRevisionInfo[];
   /** 최상위 Comment만(오래된 순) — 각 원소의 replies에 그 답변들이 들어있다. */
   comments: TaskCommentInfo[];
+  /** Update/Reply를 합친 총 개수 — 초기 조회 시 Prisma `_count`(가벼운 COUNT만,
+   * 본문/작성자 조인 없음)로 채워진다. Update Modal을 한 번이라도 열어
+   * comments가 실제로 채워지면 그 이후에는 comments 기준으로 다시 계산한다. */
+  commentCount: number;
+}
+
+/** Task Modal을 열 때 getTaskDetailAction으로 조회하는 Lazy 상세 — TaskWithRelations의
+ * 일부 필드와 정확히 대응된다. */
+export interface TaskDetailInfo {
+  originalStartDate: string;
+  originalDueDate: string;
+  memo: string | null;
+  halfDayPeriod: string | null;
+  projectDetail: { projectName: string; categoryId: string | null } | null;
+  meetingDetail: {
+    department: string | null;
+    time: string | null;
+    location: string | null;
+    attendeeIds: string[];
+  } | null;
+  scheduleRevisions: TaskScheduleRevisionInfo[];
 }
 
 /**

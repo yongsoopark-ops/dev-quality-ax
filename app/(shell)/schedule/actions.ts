@@ -9,6 +9,7 @@ import { resolveMentionedUserIds } from "@/lib/schedule/mention";
 import type {
   ProjectCategoryOption,
   TaskCommentInfo,
+  TaskDetailInfo,
   TaskFormInput,
   TaskScheduleRevisionInfo,
 } from "@/lib/schedule/types";
@@ -431,6 +432,33 @@ function commentToInfo(comment: {
 }
 
 /**
+ * Update Modal을 열 때만 호출하는 Lazy Load 전용 조회(성능 개선 요청사항 4) —
+ * 최상위 Comment + 그 답변을 이 Task 1건 기준으로 가져온다. 초기 /schedule
+ * 진입 시(page.tsx)에는 더 이상 Comment/Reply 본문을 eager load하지 않는다 —
+ * "💬 업데이트 N" 배지는 page.tsx가 함께 내려준 가벼운 _count만 쓰다가, 이
+ * Action이 처음 성공하면 그 이후로는 실제 목록 길이로 대체된다(TaskDetailPanel).
+ */
+export async function getTaskCommentsAction(taskId: string): Promise<{ comments?: TaskCommentInfo[]; error?: string }> {
+  await requireUser();
+
+  const comments = await prisma.taskComment.findMany({
+    where: { taskId, parentId: null },
+    orderBy: { createdAt: "asc" },
+    include: {
+      author: { select: { name: true } },
+      replies: { orderBy: { createdAt: "asc" }, include: { author: { select: { name: true } } } },
+    },
+  });
+
+  return {
+    comments: comments.map((c) => ({
+      ...commentToInfo(c),
+      replies: c.replies.map(commentToInfo),
+    })),
+  };
+}
+
+/**
  * Update/답변의 contentJson 안 Mention Node(@단일/@복수/@All)를 분석해 대상 User
  * 각각에게 Notification을 만든다(요청사항 3, 4). @All은 ACTIVE User 전체로
  * 펼쳐지고, 작성자 본인은 항상 제외한다(resolveMentionedUserIds가 처리) — 이름을
@@ -624,6 +652,56 @@ export async function deleteTaskCommentAction(commentId: string): Promise<{ ok?:
 
   revalidatePath("/schedule");
   return { ok: true };
+}
+
+/**
+ * Task Modal을 열 때만 호출하는 Lazy Load 전용 조회(성능 개선 요청사항 3) —
+ * page.tsx의 초기 목록 조회에서는 더 이상 담지 않는 "조건부 상세정보 전체 +
+ * 일정 변경 이력"을 이 Task 1건 기준으로 가져온다. Comment/Reply는 여기 포함
+ * 하지 않는다 — Update Modal을 열 때 getTaskCommentsAction으로 별도 조회한다.
+ */
+export async function getTaskDetailAction(taskId: string): Promise<{ detail?: TaskDetailInfo; error?: string }> {
+  await requireUser();
+
+  const task = await prisma.task.findUnique({
+    where: { id: taskId },
+    include: {
+      projectDetail: true,
+      meetingDetail: { include: { attendees: true } },
+      scheduleRevisions: { orderBy: { revisionNo: "asc" }, include: { creator: { select: { name: true } } } },
+    },
+  });
+  if (!task) return { error: "업무를 찾을 수 없습니다." };
+
+  return {
+    detail: {
+      originalStartDate: task.startDate.toISOString(),
+      originalDueDate: task.dueDate.toISOString(),
+      memo: task.memo,
+      halfDayPeriod: task.halfDayPeriod,
+      projectDetail: task.projectDetail
+        ? { projectName: task.projectDetail.projectName, categoryId: task.projectDetail.categoryId }
+        : null,
+      meetingDetail: task.meetingDetail
+        ? {
+            department: task.meetingDetail.department,
+            time: task.meetingDetail.time ? task.meetingDetail.time.toISOString() : null,
+            location: task.meetingDetail.location,
+            attendeeIds: task.meetingDetail.attendees.map((a) => a.userId),
+          }
+        : null,
+      scheduleRevisions: task.scheduleRevisions.map((rev) => ({
+        id: rev.id,
+        revisionNo: rev.revisionNo,
+        startDate: rev.startDate.toISOString(),
+        dueDate: rev.dueDate.toISOString(),
+        reasonText: rev.reasonText,
+        createdBy: rev.createdBy,
+        createdByName: rev.creator.name,
+        createdAt: rev.createdAt.toISOString(),
+      })),
+    },
+  };
 }
 
 export async function deleteTaskAction(taskId: string): Promise<{ ok?: true; error?: string }> {

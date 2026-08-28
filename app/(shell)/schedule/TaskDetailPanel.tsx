@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { TaskCategory, TaskStatus } from "@/app/generated/prisma/enums";
 import {
   HALF_DAY_PERIOD_LABELS,
@@ -29,6 +29,8 @@ import {
   createTaskAction,
   deleteTaskAction,
   deleteTaskScheduleRevisionAction,
+  getTaskCommentsAction,
+  getTaskDetailAction,
   removeProjectCategoryAction,
   updateTaskAction,
   updateTaskScheduleRevisionAction,
@@ -631,16 +633,104 @@ export function TaskDetailPanel({
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // 성능 개선: page.tsx는 더 이상 scheduleRevisions/조건부 상세(memo/halfDayPeriod/
+  // meetingDetail/projectDetail.categoryId)/최초 일정을 eager load하지 않는다 —
+  // Task Modal이 열릴 때(edit 모드) getTaskDetailAction으로 이 Task 1건만 따로
+  // 조회해 input/savedRevisions에 병합한다. 그 전까지 보이는 값(최초 일정=유효
+  // 일정 임시값, savedRevisions=[] 등)은 안전한 임시값이고, 실제 저장(저장 버튼)은
+  // detailStatus가 "ready"가 아닌 동안 막아 뒤늦게 도착한 진짜 값을 덮어쓰기
+  // 전에 저장되는 것을 원천 차단한다(요청사항: 회귀 없이 Lazy Load). 조회
+  // 자체가 실패(세션 만료 등)했을 때도 "ready"로 착각해 저장 버튼이 풀리면
+  // 안 되므로 loading/ready와 별개로 error 상태를 명시적으로 구분한다 — 성공
+  // 콜백에서만 "ready"가 된다.
+  const [detailStatus, setDetailStatus] = useState<"loading" | "ready" | "error">(mode === "edit" ? "loading" : "ready");
+
   // 저장 완료된 공식 일정 변경 이력. "+ 일정 변경"으로 만든 Draft(아직 미저장)와는
   // 분리된 별개 상태다 — Draft는 "변경 적용"을 눌러야만 여기로 옮겨온다.
   const [savedRevisions, setSavedRevisions] = useState<TaskScheduleRevisionInfo[]>(task?.scheduleRevisions ?? []);
   const [draftRevision, setDraftRevision] = useState<RevisionDraft | null>(null);
 
+  useEffect(() => {
+    if (mode !== "edit" || !task) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await getTaskDetailAction(task.id);
+        if (cancelled) return;
+        if (res.detail) {
+          const d = res.detail;
+          setInput((prev) => ({
+            ...prev,
+            startDate: d.originalStartDate.slice(0, 10),
+            dueDate: d.originalDueDate.slice(0, 10),
+            memo: d.memo ?? "",
+            halfDayPeriod: d.halfDayPeriod ?? "",
+            categoryId: d.projectDetail?.categoryId ?? "",
+            department: d.meetingDetail?.department ?? "",
+            attendeeIds: d.meetingDetail?.attendeeIds ?? [],
+            meetingDate: toLocalDateString(d.meetingDetail?.time ?? null) || prev.meetingDate,
+            meetingStartTime: toLocalTimeString(d.meetingDetail?.time ?? null),
+            location: d.meetingDetail?.location ?? "",
+          }));
+          setSavedRevisions(d.scheduleRevisions);
+          setDetailStatus("ready");
+        } else {
+          setError(res.error ?? "업무 상세 정보를 불러오지 못했습니다.");
+          setDetailStatus("error");
+        }
+      } catch {
+        if (cancelled) return;
+        setError("업무 상세 정보를 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.");
+        setDetailStatus("error");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Update/Reply는 Task 상세와 분리된 UpdateModal에서 전부 처리한다 — 여기서는
-  // "💬 업데이트 N" 카운트를 위해 목록만 들고 있는다.
-  const [comments, setComments] = useState<TaskCommentInfo[]>(task?.comments ?? []);
+  // "💬 업데이트 N" 카운트를 위해 목록만 들고 있는다. 성능 개선: page.tsx가 더
+  // 이상 Comment/Reply 본문을 eager load하지 않으므로, Update Modal을 실제로
+  // 열기 전까지는 빈 배열이고 배지 숫자는 task.commentCount(가벼운 _count)를
+  // 대신 쓴다 — Update Modal을 한 번이라도 열어 목록을 실제로 받으면 그 이후는
+  // comments 기준으로 계산한다(수정/삭제 즉시 반영을 그대로 유지하기 위함).
+  const [comments, setComments] = useState<TaskCommentInfo[]>([]);
+  const [commentsLoaded, setCommentsLoaded] = useState(false);
+  const [commentsLoading, setCommentsLoading] = useState(false);
+  const [commentsError, setCommentsError] = useState<string | null>(null);
   const [showUpdateModal, setShowUpdateModal] = useState(initialShowUpdateModal ?? false);
-  const commentTotalCount = comments.reduce((sum, c) => sum + 1 + c.replies.length, 0);
+  const commentTotalCount = commentsLoaded
+    ? comments.reduce((sum, c) => sum + 1 + c.replies.length, 0)
+    : (task?.commentCount ?? 0);
+
+  useEffect(() => {
+    if (!showUpdateModal || commentsLoaded || commentsLoading || !task) return;
+    let cancelled = false;
+    (async () => {
+      setCommentsLoading(true);
+      setCommentsError(null);
+      try {
+        const res = await getTaskCommentsAction(task.id);
+        if (cancelled) return;
+        if (res.comments) {
+          setComments(res.comments);
+          setCommentsLoaded(true);
+        } else {
+          setCommentsError(res.error ?? "업데이트를 불러오지 못했습니다.");
+        }
+      } catch {
+        if (!cancelled) setCommentsError("업데이트를 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.");
+      } finally {
+        if (!cancelled) setCommentsLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showUpdateModal]);
 
   function set<K extends keyof TaskFormInput>(key: K, value: TaskFormInput[K]) {
     setInput((prev) => ({ ...prev, [key]: value }));
@@ -973,10 +1063,16 @@ export function TaskDetailPanel({
                 </button>
                 <button
                   type="submit"
-                  disabled={saving}
+                  // detailStatus가 "ready"가 아닌 동안은 originalStartDate/DueDate·
+                  // categoryId·meetingDetail·savedRevisions가 아직 임시값이거나(로딩
+                  // 중) 애초에 못 받아온 상태(조회 실패)다 — 두 경우 모두 지금
+                  // 저장하면 뒤늦게 도착할(또는 영영 못 받은) 진짜 값을 임시값으로
+                  // 덮어써 버릴 수 있어 저장을 막는다(요청사항: Lazy Load 회귀 방지).
+                  disabled={saving || detailStatus !== "ready"}
+                  title={detailStatus === "loading" ? "상세 정보를 불러오는 중입니다" : undefined}
                   className="rounded-md bg-navy-900 px-4 py-1.5 text-xs font-medium text-white disabled:opacity-50"
                 >
-                  {saving ? "저장 중..." : "저장"}
+                  {saving ? "저장 중..." : detailStatus === "loading" ? "불러오는 중..." : "저장"}
                 </button>
               </div>
             </>
@@ -1010,6 +1106,8 @@ export function TaskDetailPanel({
           currentUser={currentUser}
           users={users}
           focusCommentId={initialFocusCommentId}
+          loading={commentsLoading}
+          loadError={commentsError}
           onClose={() => setShowUpdateModal(false)}
         />
       )}

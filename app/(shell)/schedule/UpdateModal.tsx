@@ -396,6 +396,8 @@ export function UpdateModal({
   currentUser,
   users,
   focusCommentId,
+  loading,
+  loadError,
   onClose,
 }: {
   taskTitle: string;
@@ -407,6 +409,10 @@ export function UpdateModal({
   users: ScheduleUser[];
   /** Notification Deep Link로 열렸을 때 스크롤+하이라이트할 대상 Comment/Reply id. */
   focusCommentId?: string;
+  /** 성능 개선: comments는 이 Modal을 열 때 처음으로 Lazy 조회된다(TaskDetailPanel) —
+   * 조회가 끝나기 전까지는 목록이 비어 있는 게 아니라 "불러오는 중"임을 구분해서 보여준다. */
+  loading?: boolean;
+  loadError?: string | null;
   onClose: () => void;
 }) {
   const totalCount = comments.reduce((sum, c) => sum + 1 + c.replies.length, 0);
@@ -458,57 +464,68 @@ export function UpdateModal({
         </div>
 
         <div className="space-y-3 overflow-y-auto px-5 py-4 text-sm">
-          <Composer
-            key={composerKey}
-            placeholder="새 업데이트를 입력하세요"
-            submitLabel="업데이트 등록"
-            submittingLabel="등록 중..."
-            cancelLabel="입력 취소"
-            mentionUsers={users}
-            onCancel={() => setComposerKey((k) => k + 1)}
-            onSubmit={async (json, text) => {
-              const res = await createTaskCommentAction(taskId, json, text);
-              if (res.error || !res.comment) return res.error ?? "업데이트를 등록하지 못했습니다.";
-              const created = res.comment;
-              onCommentsChange((prev) => [...prev, created]);
-              setComposerKey((k) => k + 1);
-              return null;
-            }}
-          />
-
-          {comments.length > 0 ? (
-            <div className="space-y-2">
-              {comments.map((c) => (
-                <CommentCard
-                  key={c.id}
-                  comment={c}
-                  currentUser={currentUser}
-                  mentionUsers={users}
-                  focusCommentId={focusCommentId}
-                  onUpdated={(updated) =>
-                    onCommentsChange((prev) => prev.map((p) => (p.id === updated.id ? { ...updated, replies: p.replies } : p)))
-                  }
-                  onDeleted={(id) => onCommentsChange((prev) => prev.filter((p) => p.id !== id))}
-                  onReplyAdded={(parentId, reply) =>
-                    onCommentsChange((prev) => prev.map((p) => (p.id === parentId ? { ...p, replies: [...p.replies, reply] } : p)))
-                  }
-                  onReplyUpdated={(parentId, reply) =>
-                    onCommentsChange((prev) =>
-                      prev.map((p) =>
-                        p.id === parentId ? { ...p, replies: p.replies.map((r) => (r.id === reply.id ? reply : r)) } : p,
-                      ),
-                    )
-                  }
-                  onReplyDeleted={(parentId, replyId) =>
-                    onCommentsChange((prev) =>
-                      prev.map((p) => (p.id === parentId ? { ...p, replies: p.replies.filter((r) => r.id !== replyId) } : p)),
-                    )
-                  }
-                />
-              ))}
-            </div>
+          {loading ? (
+            // 목록을 아직 Lazy 조회 중일 때는 새 Update 등록도 잠시 막는다 — 조회가
+            // 끝나기 전에 등록하면, 뒤이어 도착하는 목록 조회 결과가 방금 등록한
+            // 내용을 덮어써 화면에서 사라져 보일 수 있는 경합을 원천 차단한다.
+            <p className="py-6 text-center text-xs text-navy-950/40">불러오는 중...</p>
+          ) : loadError ? (
+            <p className="py-6 text-center text-xs text-red-600">{loadError}</p>
           ) : (
-            <p className="py-4 text-center text-xs text-navy-950/40">아직 업데이트가 없습니다.</p>
+            <>
+              <Composer
+                key={composerKey}
+                placeholder="새 업데이트를 입력하세요"
+                submitLabel="업데이트 등록"
+                submittingLabel="등록 중..."
+                cancelLabel="입력 취소"
+                mentionUsers={users}
+                onCancel={() => setComposerKey((k) => k + 1)}
+                onSubmit={async (json, text) => {
+                  const res = await createTaskCommentAction(taskId, json, text);
+                  if (res.error || !res.comment) return res.error ?? "업데이트를 등록하지 못했습니다.";
+                  const created = res.comment;
+                  onCommentsChange((prev) => [...prev, created]);
+                  setComposerKey((k) => k + 1);
+                  return null;
+                }}
+              />
+
+              {comments.length > 0 ? (
+                <div className="space-y-2">
+                  {comments.map((c) => (
+                    <CommentCard
+                      key={c.id}
+                      comment={c}
+                      currentUser={currentUser}
+                      mentionUsers={users}
+                      focusCommentId={focusCommentId}
+                      onUpdated={(updated) =>
+                        onCommentsChange((prev) => prev.map((p) => (p.id === updated.id ? { ...updated, replies: p.replies } : p)))
+                      }
+                      onDeleted={(id) => onCommentsChange((prev) => prev.filter((p) => p.id !== id))}
+                      onReplyAdded={(parentId, reply) =>
+                        onCommentsChange((prev) => prev.map((p) => (p.id === parentId ? { ...p, replies: [...p.replies, reply] } : p)))
+                      }
+                      onReplyUpdated={(parentId, reply) =>
+                        onCommentsChange((prev) =>
+                          prev.map((p) =>
+                            p.id === parentId ? { ...p, replies: p.replies.map((r) => (r.id === reply.id ? reply : r)) } : p,
+                          ),
+                        )
+                      }
+                      onReplyDeleted={(parentId, replyId) =>
+                        onCommentsChange((prev) =>
+                          prev.map((p) => (p.id === parentId ? { ...p, replies: p.replies.filter((r) => r.id !== replyId) } : p)),
+                        )
+                      }
+                    />
+                  ))}
+                </div>
+              ) : (
+                <p className="py-4 text-center text-xs text-navy-950/40">아직 업데이트가 없습니다.</p>
+              )}
+            </>
           )}
         </div>
       </div>

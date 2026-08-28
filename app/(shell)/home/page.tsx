@@ -45,19 +45,35 @@ export default async function HomePage({
   const previousRange = getDashboardPeriodRange(previousPeriod);
   const comparisonLabel = getComparisonLabel(period);
 
-  // Google API를 호출하지 않는다. 미리 계산되어 저장된 KPIResult / 캐시(GoogleSheetSourceRow)만 사용한다.
-  const kpis = await prisma.kPIDefinition.findMany({
-    where: { enabled: true },
-    orderBy: { displayOrder: "asc" },
-    include: { result: true },
-  });
+  // 성능 개선(진단 Step 근거): 아래 4개는 서로 독립적인 조회라 순서대로 await하지
+  // 않고 Promise.all로 병렬 실행한다 — 이전에는 하나씩 기다려 왕복 시간이 그대로
+  // 합산됐다. activeUsers(ACTIVE User 목록)는 API 사용료 집계와 팀 연결 상태
+  // 계산이 둘 다 필요로 하는 값이라 여기서 한 번만 조회해 두 함수에 그대로
+  // 넘긴다 — 기존에는 두 함수가 각자 User 테이블을 따로 조회해 같은 요청 안에서
+  // 똑같은 조회가 중복됐다.
+  const [activeUsers, kpis, savedLayoutRow] = await Promise.all([
+    prisma.user.findMany({
+      where: { status: "ACTIVE" },
+      select: { id: true, name: true, email: true, lastActiveAt: true, lastHeartbeatAt: true },
+    }),
+    // Google API를 호출하지 않는다. 미리 계산되어 저장된 KPIResult / 캐시(GoogleSheetSourceRow)만 사용한다.
+    prisma.kPIDefinition.findMany({
+      where: { enabled: true },
+      orderBy: { displayOrder: "asc" },
+      include: { result: true },
+    }),
+    // Dashboard Layout도 KPI 계산과 완전히 독립적이라 함께 병렬화한다(기존에는
+    // KPI 계산이 다 끝난 뒤에야 순서대로 조회했다).
+    prisma.dashboardLayout.findUnique({ where: { key: HOME_LAYOUT_KEY } }),
+  ]);
 
   // API 사용료 요약은 Home의 KPI 기간 선택(period)과 무관하게 항상 실제 현재 월 기준이다.
-  // AIUsage 테이블만 조회하며 외부 AI API를 호출하지 않는다.
-  const apiUsageSummary = await getMonthlyApiUsageSummary();
-
-  // 팀원 연결 상태도 KPI 기간 선택과 무관하게 User 테이블만으로 계산한다.
-  const teamPresence = await getTeamPresenceSummary();
+  // 팀원 연결 상태도 KPI 기간 선택과 무관하게 계산한다 — 둘 다 activeUsers 확정 후에만
+  // 가능하므로(위 Promise.all 다음 단계) 이 둘끼리는 서로 독립적이라 다시 병렬화한다.
+  const [apiUsageSummary, teamPresence] = await Promise.all([
+    getMonthlyApiUsageSummary(activeUsers),
+    getTeamPresenceSummary(activeUsers),
+  ]);
 
   const rowsBySource = new Map<string, Record<string, string>[]>();
   async function getRows(sourceId: string) {
@@ -140,9 +156,9 @@ export default async function HomePage({
 
   const years = buildYearRange([...detectedYears, ...getDashboardPeriodYears(period)]);
 
-  // Dashboard Layout은 Prisma 1회 조회로만 가져온다. KPI 계산(위)과는 완전히 분리되어 있으며,
-  // 여기서는 이미 계산된 cards를 저장된 좌표에 맞춰 배치만 한다.
-  const savedLayoutRow = await prisma.dashboardLayout.findUnique({ where: { key: HOME_LAYOUT_KEY } });
+  // Dashboard Layout은 위 Promise.all에서 이미 조회해 뒀다(KPI 계산과 완전히
+  // 분리되어 있어 병렬화 대상) — 여기서는 이미 계산된 cards를 저장된 좌표에
+  // 맞춰 배치만 한다.
   const savedItems: DashboardLayoutItem[] | null = savedLayoutRow
     ? JSON.parse(savedLayoutRow.layoutData)
     : null;

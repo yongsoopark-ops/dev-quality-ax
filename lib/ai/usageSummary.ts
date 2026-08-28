@@ -32,6 +32,15 @@ export interface UserApiUsageEntry {
   unpricedCount: number;
 }
 
+/** getMonthlyApiUsageByUser/getTeamPresenceSummary가 공유하는 최소 ACTIVE User 모양 —
+ * 호출부(예: /home page.tsx)가 이미 한 번 조회한 값을 그대로 넘기면 중복 조회를
+ * 피할 수 있다(성능 개선 요청사항 1). */
+export interface ActiveUserLite {
+  id: string;
+  name: string | null;
+  email: string;
+}
+
 export interface MonthlyApiUsageSummary {
   monthLabel: string;
   totalCostKrw: number;
@@ -44,20 +53,26 @@ export interface MonthlyApiUsageSummary {
 /**
  * ACTIVE 사용자 기준 이번 달 담당자별 AI API 비용을 집계한다. Provider 구분 없이
  * 합산하며(Google+OpenAI+Anthropic 전부), 외부 API를 호출하지 않고 AIUsage 테이블만 조회한다.
+ *
+ * activeUsers를 넘기면 그 목록을 그대로 쓰고 User 테이블을 다시 조회하지 않는다 —
+ * /home처럼 같은 요청 안에서 이미 ACTIVE User를 조회한 호출부가 중복 조회를
+ * 피하기 위해 쓴다(성능 개선). 넘기지 않으면 기존과 동일하게 직접 조회한다.
  */
-export async function getMonthlyApiUsageByUser(): Promise<UserApiUsageEntry[]> {
+export async function getMonthlyApiUsageByUser(activeUsers?: ActiveUserLite[]): Promise<UserApiUsageEntry[]> {
   const { start, end } = getCurrentMonthRangeKST();
 
-  const activeUsers = await prisma.user.findMany({
-    where: { status: "ACTIVE" },
-    select: { id: true, name: true, email: true },
-  });
+  const users =
+    activeUsers ??
+    (await prisma.user.findMany({
+      where: { status: "ACTIVE" },
+      select: { id: true, name: true, email: true },
+    }));
 
   const usages = await prisma.aIUsage.findMany({
     where: {
       createdAt: { gte: start, lt: end },
       status: "SUCCESS",
-      userId: { in: activeUsers.map((u) => u.id) },
+      userId: { in: users.map((u) => u.id) },
     },
     select: { userId: true, calculatedCostUsd: true },
   });
@@ -73,7 +88,7 @@ export async function getMonthlyApiUsageByUser(): Promise<UserApiUsageEntry[]> {
     usdByUser.set(usage.userId, (usdByUser.get(usage.userId) ?? 0) + usage.calculatedCostUsd);
   }
 
-  return activeUsers
+  return users
     .map((user) => ({
       userId: user.id,
       displayName: user.name ?? user.email,
@@ -89,9 +104,9 @@ export async function getMonthlyApiUsageByUser(): Promise<UserApiUsageEntry[]> {
  * Home 총액을 별도로 독립 집계하면 반올림 방식 차이로 담당자별 합계와 어긋날 수 있으므로,
  * 항상 동일한 숫자가 나오도록 이 함수가 유일한 진실 공급원이 되게 한다.
  */
-export async function getMonthlyApiUsageSummary(): Promise<MonthlyApiUsageSummary> {
+export async function getMonthlyApiUsageSummary(activeUsers?: ActiveUserLite[]): Promise<MonthlyApiUsageSummary> {
   const { label } = getCurrentMonthRangeKST();
-  const byUser = await getMonthlyApiUsageByUser();
+  const byUser = await getMonthlyApiUsageByUser(activeUsers);
 
   const totalCostKrw = byUser.reduce((sum, user) => sum + user.costKrw, 0);
   const unpricedCount = byUser.reduce((sum, user) => sum + user.unpricedCount, 0);
