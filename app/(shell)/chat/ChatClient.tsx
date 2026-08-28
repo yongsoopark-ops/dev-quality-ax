@@ -3,9 +3,11 @@
 import { useState } from "react";
 import { runChatCommandAction } from "./actions";
 import type { ChatCommandResult } from "@/lib/chat/types";
+import { CHAT_TASKS, DEFAULT_CHAT_TASK_ID } from "@/lib/chat/tasks";
 import { UserMessage } from "./components/UserMessage";
 import { AssistantTextMessage } from "./components/AssistantTextMessage";
 import { ChatComposer } from "./components/ChatComposer";
+import { ChatTaskSidebar } from "./components/ChatTaskSidebar";
 import { PreflightCard, ExecutionCard, W4PreflightCard, W4ExecutionCard } from "./ResultCards";
 
 interface UserMessageData {
@@ -59,19 +61,34 @@ function AssistantMessage({
  * 전송, W3/W4 실행 handler)은 기존과 완전히 동일하다 — 레이아웃/표현만
  * 바뀌었다.
  *
- * 바깥을 flex row(`flex h-dvh`)로 두고 Conversation 영역은 `flex-1
- * min-w-0`만 준다 — 나중에 Chat 전용 2차 Sidebar(Task List 등)가 형제
- * 요소로 추가돼도 이 영역이 자동으로 줄어들 뿐, 지금 구조를 바꿀 필요가
- * 없다(요청사항 1/10). 그 안에서 실제 대화 내용은 다시 `mx-auto max-w-3xl`로
- * 가운데 정렬한다.
+ * Chat 2차 Sidebar Step — 바깥을 flex row(`flex h-dvh`)로 두고 왼쪽에
+ * ChatTaskSidebar, 오른쪽에 Conversation 영역(`flex-1 min-w-0`)을 형제로
+ * 둔다. 메인 Sidebar/AppShell은 전혀 건드리지 않았다(요청사항 1). 작업
+ * 선택은 selectedTaskId Client state로만 관리하고(요청사항 8, DB 저장
+ * 없음), 대화 내용은 그대로 유지한 채 그 작업의 안내 메시지 하나만
+ * 추가한다(요청사항 9) — 기존 W3/W4 Preflight 진행 중인 카드나 대화
+ * 이력을 지우지 않는다. 실제 명령 처리는 지금과 똑같이 handleSend →
+ * runChatCommandAction(→ parseChatCommand)이 담당하며, 이 Step은 그
+ * 앞에 선택 UI/안내문 하나를 추가했을 뿐 parser/action을 전혀 바꾸지
+ * 않았다(요청사항 6/14).
  */
 export function ChatClient() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [isSending, setIsSending] = useState(false);
+  const [selectedTaskId, setSelectedTaskId] = useState(DEFAULT_CHAT_TASK_ID);
 
   function appendAssistantMessage(result: ChatCommandResult) {
     setMessages((prev) => [...prev, { id: nextMessageId(), role: "ASSISTANT", result }]);
+  }
+
+  function handleSelectTask(taskId: string) {
+    if (taskId === selectedTaskId) return;
+    setSelectedTaskId(taskId);
+    const task = CHAT_TASKS.find((t) => t.id === taskId);
+    if (task?.instructionMessage) {
+      appendAssistantMessage({ kind: "TEXT", message: task.instructionMessage });
+    }
   }
 
   async function handleSend() {
@@ -99,43 +116,47 @@ export function ChatClient() {
   }
 
   return (
-    <div className="flex h-dvh min-w-0 flex-1 flex-col overflow-hidden">
-      <div className="shrink-0 border-b border-navy-100 px-6 py-5 sm:px-8">
-        <h1 className="text-lg font-semibold text-navy-950">Chat</h1>
-        <p className="mt-1 max-w-[640px] text-sm text-navy-950/60">
-          개발품질 업무 요청과 자동화를 실행하는 통합 작업 공간입니다.
-        </p>
-      </div>
+    <div className="flex h-dvh min-w-0 flex-1 flex-col overflow-hidden sm:flex-row">
+      <ChatTaskSidebar selectedTaskId={selectedTaskId} onSelect={handleSelectTask} />
 
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto flex w-full max-w-3xl flex-col gap-6 px-4 py-6 sm:px-6">
-          {messages.length === 0 ? (
-            <div className="flex min-h-[300px] flex-1 items-center justify-center">
-              <p className="text-sm text-navy-950/40">무엇을 도와드릴까요?</p>
-            </div>
-          ) : (
-            messages.map((m) =>
-              m.role === "USER" ? (
-                <UserMessage key={m.id} text={m.text} />
-              ) : (
-                <AssistantMessage key={m.id} result={m.result} onExecuted={appendAssistantMessage} />
-              ),
-            )
-          )}
-          {isSending && <AssistantTextMessage message="분석 중..." />}
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+        <div className="shrink-0 border-b border-navy-100 px-6 py-5 sm:px-8">
+          <h1 className="text-lg font-semibold text-navy-950">Chat</h1>
+          <p className="mt-1 max-w-[640px] text-sm text-navy-950/60">
+            개발품질 업무 요청과 자동화를 실행하는 통합 작업 공간입니다.
+          </p>
         </div>
-      </div>
 
-      <div className="shrink-0 border-t border-navy-100 px-4 py-4 sm:px-6">
-        <div className="mx-auto w-full max-w-3xl">
-          <ChatComposer
-            value={input}
-            onChange={setInput}
-            onSend={handleSend}
-            onKeyDown={handleKeyDown}
-            disabled={!input.trim() || isSending}
-            sending={isSending}
-          />
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          <div className="mx-auto flex w-full max-w-3xl flex-col gap-6 px-4 py-6 sm:px-6">
+            {messages.length === 0 ? (
+              <div className="flex min-h-[300px] flex-1 items-center justify-center">
+                <p className="text-sm text-navy-950/40">무엇을 도와드릴까요?</p>
+              </div>
+            ) : (
+              messages.map((m) =>
+                m.role === "USER" ? (
+                  <UserMessage key={m.id} text={m.text} />
+                ) : (
+                  <AssistantMessage key={m.id} result={m.result} onExecuted={appendAssistantMessage} />
+                ),
+              )
+            )}
+            {isSending && <AssistantTextMessage message="분석 중..." />}
+          </div>
+        </div>
+
+        <div className="shrink-0 border-t border-navy-100 px-4 py-4 sm:px-6">
+          <div className="mx-auto w-full max-w-3xl">
+            <ChatComposer
+              value={input}
+              onChange={setInput}
+              onSend={handleSend}
+              onKeyDown={handleKeyDown}
+              disabled={!input.trim() || isSending}
+              sending={isSending}
+            />
+          </div>
         </div>
       </div>
     </div>
