@@ -13,6 +13,7 @@ export function ChatComposer({
   onKeyDown,
   disabled,
   sending,
+  placeholder,
 }: {
   value: string;
   onChange: (value: string) => void;
@@ -20,6 +21,8 @@ export function ChatComposer({
   onKeyDown: (e: React.KeyboardEvent<HTMLTextAreaElement>) => void;
   disabled: boolean;
   sending: boolean;
+  /** 선택된 작업에 따라 달라지는 안내 문구(요청사항 11). 없으면 기본값을 쓴다. */
+  placeholder?: string;
 }) {
   return (
     <div className="flex items-end gap-2 rounded-2xl border border-navy-100 bg-white p-2.5 shadow-sm">
@@ -29,7 +32,7 @@ export function ChatComposer({
         value={value}
         onChange={(e) => onChange(e.target.value)}
         onKeyDown={onKeyDown}
-        placeholder="업무 요청을 입력하세요"
+        placeholder={placeholder ?? "업무 요청을 입력하세요"}
         className="max-h-40 flex-1 resize-none self-center rounded-lg px-2.5 py-2 text-sm leading-relaxed text-navy-950 placeholder:text-navy-950/40 focus:outline-none"
       />
       <button

@@ -1,8 +1,6 @@
 "use client";
 
-import { useState } from "react";
-import { executeW3AutomationAction, executeW4AutomationAction } from "./actions";
-import type { ChatCommandResult, W3ExecutionOutcome, W4ExecutionOutcome } from "@/lib/chat/types";
+import type { W3ExecutionOutcome, W4ExecutionOutcome } from "@/lib/chat/types";
 import type { W3PreflightResult } from "@/lib/sheetAutomation/write/w3Preflight";
 import type { W4PreflightResult } from "@/lib/sheetAutomation/w3ToW4/w4Preflight";
 import type { TemplateCompatibilityInfo } from "@/lib/sheetAutomation/templateSchema";
@@ -12,9 +10,12 @@ import { MetricGrid, type MetricItem } from "./components/MetricGrid";
 
 /**
  * 이 파일의 모든 컴포넌트는 W3/W4 Preflight·실행 결과의 "표현"만 담당한다 —
- * Preflight 계산/Template 판단/실행 handler/confirm 로직은 기존과 완전히
- * 동일하다(그대로 옮겨왔을 뿐 한 줄도 바꾸지 않았다). 달라진 건 정보를
- * 세로 목록 대신 ChatResultCard + MetricGrid로 배치한 것뿐이다.
+ * Preflight 계산/Template 판단 로직은 기존과 완전히 동일하다(한 줄도 바꾸지
+ * 않았다). Chat UX 단순화 Step — READY 상태의 확인/실행 버튼은 제거했다.
+ * 이제 ChatClient.tsx가 preflight READY를 받으면 카드로 보여주기 전에 바로
+ * 실행 Action을 호출하므로(자동 실행), 이 카드가 READY 상태로 그려질 일은
+ * 실제로는 없다 — 그래도 타입상 가능한 상태라 방어적으로 "버튼 없이 통과
+ * 표시"만 남겨 둔다. NEEDS_REVIEW/TEMPLATE_CHANGED/ERROR 표시는 기존과 동일.
  */
 
 /** "Template V1 / COMPATIBLE" 처럼 Preflight 카드 상단에 항상 붙는 한 줄 표시. */
@@ -45,16 +46,7 @@ export function TemplateChangedCard({ templateCheck }: { templateCheck: Template
   );
 }
 
-export function PreflightCard({
-  preflight,
-  onExecuted,
-}: {
-  preflight: W3PreflightResult;
-  onExecuted: (result: ChatCommandResult) => void;
-}) {
-  const [confirming, setConfirming] = useState(false);
-  const [executing, setExecuting] = useState(false);
-
+export function PreflightCard({ preflight }: { preflight: W3PreflightResult }) {
   if (preflight.status === "ERROR") {
     return <ChatMessageBanner tone="error" message={preflight.message} />;
   }
@@ -62,19 +54,7 @@ export function PreflightCard({
     return <TemplateChangedCard templateCheck={preflight.templateCheck} />;
   }
 
-  const { summary, spreadsheetUrl, templateCheck } = preflight;
-  const totalNewRows = summary.approvalStatus.rowsToInsert + summary.detailStructure.reduce((sum: number, s) => sum + s.blocksToInsert * 3, 0);
-
-  async function handleExecute() {
-    setConfirming(false);
-    setExecuting(true);
-    const res = await executeW3AutomationAction({ spreadsheetUrl });
-    const result: ChatCommandResult = res.result
-      ? { kind: "W3_EXECUTION", execution: res.result }
-      : { kind: "TEXT", message: res.error ?? "실행하지 못했습니다." };
-    onExecuted(result);
-    setExecuting(false);
-  }
+  const { summary, templateCheck } = preflight;
 
   const metrics: MetricItem[] = [
     { label: "PW2 검사 항목", value: `${summary.totalW2Items}건` },
@@ -97,47 +77,6 @@ export function PreflightCard({
           <p className="mt-0.5 break-words text-xs text-navy-950/50">{summary.spreadsheetTitle}</p>
           <TemplateCheckLine templateCheck={templateCheck} />
         </>
-      }
-      footer={
-        preflight.status === "READY" ? (
-          confirming ? (
-            <div className="space-y-2">
-              <p className="text-xs leading-relaxed text-navy-950/70">
-                W3 자동화를 실행합니다.
-                <br />- 품질 승인 현황 {summary.approvalStatus.rowsPlanned}건
-                <br />- 신규 행 {totalNewRows}개
-                <br />
-                담당자가 작성한 기존 결과값은 덮어쓰지 않습니다.
-              </p>
-              <div className="flex gap-2">
-                <button
-                  type="button"
-                  onClick={handleExecute}
-                  disabled={executing}
-                  className="rounded-md bg-red-600 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50"
-                >
-                  {executing ? "실행 중..." : "실행"}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setConfirming(false)}
-                  disabled={executing}
-                  className="rounded-md border border-navy-100 px-3 py-1.5 text-xs text-navy-950/70"
-                >
-                  취소
-                </button>
-              </div>
-            </div>
-          ) : (
-            <button
-              type="button"
-              onClick={() => setConfirming(true)}
-              className="rounded-md bg-navy-900 px-4 py-1.5 text-sm font-medium text-white"
-            >
-              W3 자동화 실행
-            </button>
-          )
-        ) : undefined
       }
     >
       <MetricGrid items={metrics} />
@@ -236,16 +175,7 @@ export function ExecutionCard({ execution }: { execution: W3ExecutionOutcome }) 
   );
 }
 
-export function W4PreflightCard({
-  preflight,
-  onExecuted,
-}: {
-  preflight: W4PreflightResult;
-  onExecuted: (result: ChatCommandResult) => void;
-}) {
-  const [confirming, setConfirming] = useState(false);
-  const [executing, setExecuting] = useState(false);
-
+export function W4PreflightCard({ preflight }: { preflight: W4PreflightResult }) {
   if (preflight.status === "ERROR") {
     return <ChatMessageBanner tone="error" message={preflight.message} />;
   }
@@ -253,18 +183,7 @@ export function W4PreflightCard({
     return <TemplateChangedCard templateCheck={preflight.templateCheck} />;
   }
 
-  const { summary, spreadsheetUrl, templateCheck } = preflight;
-
-  async function handleExecute() {
-    setConfirming(false);
-    setExecuting(true);
-    const res = await executeW4AutomationAction({ spreadsheetUrl });
-    const result: ChatCommandResult = res.result
-      ? { kind: "W4_EXECUTION", execution: res.result }
-      : { kind: "TEXT", message: res.error ?? "실행하지 못했습니다." };
-    onExecuted(result);
-    setExecuting(false);
-  }
+  const { summary, templateCheck } = preflight;
 
   const metrics: MetricItem[] = [
     { label: "개선진행 대상", value: `${summary.totalImprovementItems}건` },
@@ -289,47 +208,6 @@ export function W4PreflightCard({
           <p className="mt-0.5 break-words text-xs text-navy-950/50">{summary.spreadsheetTitle}</p>
           <TemplateCheckLine templateCheck={templateCheck} />
         </>
-      }
-      footer={
-        preflight.status === "READY" && !summary.alreadyUpToDate ? (
-          confirming ? (
-            <div className="space-y-2">
-              <p className="text-xs leading-relaxed text-navy-950/70">
-                W4 자동화를 실행합니다.
-                <br />- 품질 승인 현황 {summary.approvalTransferCount}건
-                <br />- 상세 검사 Block {summary.detailBlocksToInsert}건
-                <br />
-                &quot;■ 개선 변경점&quot; 영역과 기존 W4 수기 데이터는 변경하지 않습니다.
-              </p>
-              <div className="flex gap-2">
-                <button
-                  type="button"
-                  onClick={handleExecute}
-                  disabled={executing}
-                  className="rounded-md bg-red-600 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50"
-                >
-                  {executing ? "실행 중..." : "실행"}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setConfirming(false)}
-                  disabled={executing}
-                  className="rounded-md border border-navy-100 px-3 py-1.5 text-xs text-navy-950/70"
-                >
-                  취소
-                </button>
-              </div>
-            </div>
-          ) : (
-            <button
-              type="button"
-              onClick={() => setConfirming(true)}
-              className="rounded-md bg-navy-900 px-4 py-1.5 text-sm font-medium text-white"
-            >
-              W4 자동화 실행
-            </button>
-          )
-        ) : undefined
       }
     >
       <MetricGrid items={metrics} />

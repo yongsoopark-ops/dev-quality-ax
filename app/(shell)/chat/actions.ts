@@ -3,9 +3,10 @@
 import { auth } from "@/auth";
 import { routeChatCommand } from "@/lib/chat/commandRouter";
 import { parseChatCommand } from "@/lib/chat/parseCommand";
+import { extractSpreadsheetId } from "@/lib/googleSheets";
 import { executeW2ToW3WriteAction } from "@/lib/sheetAutomation/write/actions";
 import { executeW3ToW4WriteAction } from "@/lib/sheetAutomation/w3ToW4/actions";
-import type { ChatCommandResult, W3ExecutionOutcome, W4ExecutionOutcome } from "@/lib/chat/types";
+import type { ChatCommand, ChatCommandResult, W3ExecutionOutcome, W4ExecutionOutcome } from "@/lib/chat/types";
 
 /**
  * Chat Client는 Google Sheets API를 직접 호출하지 않는다 — 여기서만 로그인 확인 →
@@ -24,6 +25,40 @@ export async function runChatCommandAction(input: {
   }
 
   const command = parseChatCommand(input.message);
+  const result = await routeChatCommand(command);
+  return { result };
+}
+
+/**
+ * Chat UX 단순화 Step — Sidebar에서 "W3 자동화"/"W4 자동화"를 선택해 둔
+ * 상태에서 쓰는 입력 경로. parseChatCommand()(문구 인식)를 거치지 않고
+ * ChatCommand를 여기서 직접 구성해 기존 routeChatCommand()에 그대로
+ * 넘긴다 — parseChatCommand/commandRouter/Preflight 계산 로직은 단 한 줄도
+ * 바꾸지 않았다. "W3 자동화 실행 https://..." 같은 기존 문구를 그대로
+ * 입력해도(사용자가 예전 방식을 그대로 써도) extractSpreadsheetId가 URL만
+ * 뽑아내므로 동일하게 동작한다(하위 호환).
+ */
+export async function runSelectedTaskCommandAction(input: {
+  task: "W3" | "W4";
+  text: string;
+}): Promise<{ result?: ChatCommandResult; error?: string }> {
+  const session = await auth();
+  if (!session?.user) {
+    return { error: "로그인이 필요합니다." };
+  }
+
+  const trimmed = input.text.trim();
+  if (!trimmed) {
+    return { error: "메시지를 입력해 주세요." };
+  }
+
+  const spreadsheetId = extractSpreadsheetId(trimmed);
+  if (!spreadsheetId) {
+    return { result: { kind: "TEXT", message: "Google Spreadsheet URL을 입력해 주세요." } };
+  }
+
+  const command: ChatCommand =
+    input.task === "W3" ? { type: "W3_AUTOMATION", spreadsheetUrl: trimmed } : { type: "W4_AUTOMATION", spreadsheetUrl: trimmed };
   const result = await routeChatCommand(command);
   return { result };
 }

@@ -20,7 +20,7 @@ export function ChatTaskSidebar({
       {/* Desktop: 왼쪽 고정폭 세로 목록, 스크롤 가능 */}
       <nav
         aria-label="AI 작업"
-        className="hidden w-56 shrink-0 flex-col overflow-y-auto border-r border-navy-100 bg-white sm:flex"
+        className="hidden w-64 shrink-0 flex-col overflow-y-auto border-r border-navy-100 bg-white sm:flex"
       >
         <div className="shrink-0 border-b border-navy-100 px-4 py-4">
           <p className="text-xs font-semibold uppercase tracking-wide text-navy-950/50">AI 작업</p>

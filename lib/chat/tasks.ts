@@ -28,13 +28,15 @@ export interface ChatTaskDefinition {
   icon?: string;
   /** 작업을 선택한 직후 Conversation에 한 번 보여줄 안내 메시지. 없으면 아무 것도 추가하지 않는다. */
   instructionMessage?: string;
+  /** 이 작업이 선택된 동안 Composer에 표시할 placeholder. 없으면 기본 placeholder를 쓴다. */
+  composerPlaceholder?: string;
 }
 
 export const CHAT_TASKS: ChatTaskDefinition[] = [
   {
     id: "general-chat",
     title: "일반 채팅",
-    description: "자유롭게 요청을 입력합니다.",
+    description: "자유 요청",
     category: "GENERAL",
     status: "available",
     icon: "💬",
@@ -42,27 +44,27 @@ export const CHAT_TASKS: ChatTaskDefinition[] = [
   {
     id: "w3-automation",
     title: "W3 자동화",
-    description: "PW2 → PW3 자동화를 실행합니다.",
+    description: "PW2 → PW3",
     category: "AUTOMATION",
     status: "available",
     icon: "📄",
-    instructionMessage:
-      '자동화할 Google Spreadsheet URL을 함께 입력해 주세요.\n예: "W3 자동화 실행 https://docs.google.com/spreadsheets/d/..."',
+    instructionMessage: "자동화할 Google Spreadsheet URL을 입력해 주세요.",
+    composerPlaceholder: "Google Spreadsheet URL을 입력하세요",
   },
   {
     id: "w4-automation",
     title: "W4 자동화",
-    description: "PW3 → PW4 자동화를 실행합니다.",
+    description: "PW3 → PW4",
     category: "AUTOMATION",
     status: "available",
     icon: "📄",
-    instructionMessage:
-      '자동화할 Google Spreadsheet URL을 함께 입력해 주세요.\n예: "W4 자동화 실행 https://docs.google.com/spreadsheets/d/..."',
+    instructionMessage: "자동화할 Google Spreadsheet URL을 입력해 주세요.",
+    composerPlaceholder: "Google Spreadsheet URL을 입력하세요",
   },
   {
     id: "meeting-notes",
     title: "회의록 자동 작성",
-    description: "회의 내용을 정리합니다.",
+    description: "회의 내용 정리",
     category: "FUTURE",
     status: "coming-soon",
     icon: "📝",

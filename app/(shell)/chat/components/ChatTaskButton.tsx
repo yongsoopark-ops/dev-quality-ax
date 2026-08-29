@@ -62,7 +62,7 @@ export function ChatTaskButton({
             </span>
           )}
         </span>
-        <span className="mt-0.5 block truncate text-xs text-navy-950/45">{task.description}</span>
+        <span className="mt-0.5 line-clamp-2 text-xs leading-snug text-navy-950/45">{task.description}</span>
       </span>
     </button>
   );

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { runChatCommandAction } from "./actions";
+import { executeW3AutomationAction, executeW4AutomationAction, runChatCommandAction, runSelectedTaskCommandAction } from "./actions";
 import type { ChatCommandResult } from "@/lib/chat/types";
 import { CHAT_TASKS, DEFAULT_CHAT_TASK_ID } from "@/lib/chat/tasks";
 import { UserMessage } from "./components/UserMessage";
@@ -32,51 +32,42 @@ function nextMessageId(): string {
 
 /**
  * 하나의 Assistant 응답(ChatCommandResult)을 어떤 컴포넌트로 그릴지만
- * 결정한다 — 기능/데이터는 그대로, 표현만 분기한다.
+ * 결정한다 — 기능/데이터는 그대로, 표현만 분기한다. READY 상태 Preflight는
+ * ChatClient가 자동으로 실행까지 이어가므로(continueWithAutoExecute) 여기
+ * 도달하는 W3_PREFLIGHT/W4_PREFLIGHT는 실제로는 NEEDS_REVIEW/에러 상태뿐이다.
  */
-function AssistantMessage({
-  result,
-  onExecuted,
-}: {
-  result: ChatCommandResult;
-  onExecuted: (result: ChatCommandResult) => void;
-}) {
+function AssistantMessage({ result }: { result: ChatCommandResult }) {
   switch (result.kind) {
     case "TEXT":
       return <AssistantTextMessage message={result.message} />;
     case "W3_PREFLIGHT":
-      return <PreflightCard preflight={result.preflight} onExecuted={onExecuted} />;
+      return <PreflightCard preflight={result.preflight} />;
     case "W3_EXECUTION":
       return <ExecutionCard execution={result.execution} />;
     case "W4_PREFLIGHT":
-      return <W4PreflightCard preflight={result.preflight} onExecuted={onExecuted} />;
+      return <W4PreflightCard preflight={result.preflight} />;
     case "W4_EXECUTION":
       return <W4ExecutionCard execution={result.execution} />;
   }
 }
 
 /**
- * 전역 성능 Step(Chat UI 재설계) — ChatGPT처럼 가운데 정렬된 Conversation
- * Column(max-w-3xl) 구조로 바꿨다. 기능(runChatCommandAction 호출, Enter로
- * 전송, W3/W4 실행 handler)은 기존과 완전히 동일하다 — 레이아웃/표현만
- * 바뀌었다.
- *
- * Chat 2차 Sidebar Step — 바깥을 flex row(`flex h-dvh`)로 두고 왼쪽에
- * ChatTaskSidebar, 오른쪽에 Conversation 영역(`flex-1 min-w-0`)을 형제로
- * 둔다. 메인 Sidebar/AppShell은 전혀 건드리지 않았다(요청사항 1). 작업
- * 선택은 selectedTaskId Client state로만 관리하고(요청사항 8, DB 저장
- * 없음), 대화 내용은 그대로 유지한 채 그 작업의 안내 메시지 하나만
- * 추가한다(요청사항 9) — 기존 W3/W4 Preflight 진행 중인 카드나 대화
- * 이력을 지우지 않는다. 실제 명령 처리는 지금과 똑같이 handleSend →
- * runChatCommandAction(→ parseChatCommand)이 담당하며, 이 Step은 그
- * 앞에 선택 UI/안내문 하나를 추가했을 뿐 parser/action을 전혀 바꾸지
- * 않았다(요청사항 6/14).
+ * Chat UX 단순화 Step — 작업(Sidebar) 선택 자체가 command context가 된다.
+ * W3/W4를 선택한 뒤에는 URL만 입력하면 되고("W3 자동화 실행" 같은 문구를
+ * 다시 입력할 필요 없음), Preflight가 READY면 확인 버튼 없이 바로 실행까지
+ * 이어진다. 기존 parseChatCommand()/routeChatCommand()/Preflight 계산/실행
+ * Action은 전혀 바꾸지 않았다 — runSelectedTaskCommandAction(actions.ts)이
+ * ChatCommand를 직접 구성해 그 기존 함수들에 그대로 넘길 뿐이다. 따라서
+ * "W3 자동화 실행 https://..." 같은 예전 문구도(어떤 작업이 선택돼 있든)
+ * 여전히 그대로 동작한다(하위 호환, 요청사항 4).
  */
 export function ChatClient() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [isSending, setIsSending] = useState(false);
   const [selectedTaskId, setSelectedTaskId] = useState(DEFAULT_CHAT_TASK_ID);
+
+  const selectedTask = CHAT_TASKS.find((t) => t.id === selectedTaskId);
 
   function appendAssistantMessage(result: ChatCommandResult) {
     setMessages((prev) => [...prev, { id: nextMessageId(), role: "ASSISTANT", result }]);
@@ -91,6 +82,31 @@ export function ChatClient() {
     }
   }
 
+  /**
+   * W3/W4 Preflight가 READY(+W4는 이미 최신 상태가 아닐 때)면 확인 버튼 없이
+   * 곧바로 기존 실행 Action을 호출한다(요청사항 6). 안전 검증(Preflight)
+   * 자체는 그대로 거치고, "그 결과를 보여준 뒤 다시 눌러야 하는" 단계만
+   * 없앤 것 — READY가 아니면(NEEDS_REVIEW/TEMPLATE_CHANGED/ERROR) 지금과
+   * 동일하게 그 결과를 그대로 보여주고 자동 실행하지 않는다(요청사항 7).
+   */
+  async function continueWithAutoExecute(result: ChatCommandResult) {
+    if (result.kind === "W3_PREFLIGHT" && result.preflight.status === "READY") {
+      const execRes = await executeW3AutomationAction({ spreadsheetUrl: result.preflight.spreadsheetUrl });
+      appendAssistantMessage(
+        execRes.result ? { kind: "W3_EXECUTION", execution: execRes.result } : { kind: "TEXT", message: execRes.error ?? "실행하지 못했습니다." },
+      );
+      return;
+    }
+    if (result.kind === "W4_PREFLIGHT" && result.preflight.status === "READY" && !result.preflight.summary.alreadyUpToDate) {
+      const execRes = await executeW4AutomationAction({ spreadsheetUrl: result.preflight.spreadsheetUrl });
+      appendAssistantMessage(
+        execRes.result ? { kind: "W4_EXECUTION", execution: execRes.result } : { kind: "TEXT", message: execRes.error ?? "실행하지 못했습니다." },
+      );
+      return;
+    }
+    appendAssistantMessage(result);
+  }
+
   async function handleSend() {
     const text = input.trim();
     if (!text || isSending) return;
@@ -99,12 +115,21 @@ export function ChatClient() {
     setInput("");
     setIsSending(true);
 
-    const res = await runChatCommandAction({ message: text });
+    // selectedTask 기반 routing(요청사항 3) — W3/W4가 선택돼 있으면 문구
+    // 없이 URL만 온 입력도 그 작업의 자동화 명령으로 해석한다. 그 외
+    // (일반 채팅/회의록)는 기존 자유 입력 파서를 그대로 쓴다.
+    const res =
+      selectedTaskId === "w3-automation"
+        ? await runSelectedTaskCommandAction({ task: "W3", text })
+        : selectedTaskId === "w4-automation"
+          ? await runSelectedTaskCommandAction({ task: "W4", text })
+          : await runChatCommandAction({ message: text });
+
     const result: ChatCommandResult = res.result ?? {
       kind: "TEXT",
       message: res.error ?? "요청을 처리하지 못했습니다.",
     };
-    appendAssistantMessage(result);
+    await continueWithAutoExecute(result);
     setIsSending(false);
   }
 
@@ -135,11 +160,7 @@ export function ChatClient() {
               </div>
             ) : (
               messages.map((m) =>
-                m.role === "USER" ? (
-                  <UserMessage key={m.id} text={m.text} />
-                ) : (
-                  <AssistantMessage key={m.id} result={m.result} onExecuted={appendAssistantMessage} />
-                ),
+                m.role === "USER" ? <UserMessage key={m.id} text={m.text} /> : <AssistantMessage key={m.id} result={m.result} />,
               )
             )}
             {isSending && <AssistantTextMessage message="분석 중..." />}
@@ -155,6 +176,7 @@ export function ChatClient() {
               onKeyDown={handleKeyDown}
               disabled={!input.trim() || isSending}
               sending={isSending}
+              placeholder={selectedTask?.composerPlaceholder}
             />
           </div>
         </div>
