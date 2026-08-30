@@ -4,9 +4,10 @@ import { useState } from "react";
 import { executeW3AutomationAction, executeW4AutomationAction, runChatCommandAction, runSelectedTaskCommandAction } from "./actions";
 import type { ChatCommandResult } from "@/lib/chat/types";
 import { CHAT_TASKS, DEFAULT_CHAT_TASK_ID } from "@/lib/chat/tasks";
+import { validateAttachment } from "@/lib/chat/attachments";
 import { UserMessage } from "./components/UserMessage";
 import { AssistantTextMessage } from "./components/AssistantTextMessage";
-import { ChatComposer } from "./components/ChatComposer";
+import { ChatComposer, type ChatComposerAttachment } from "./components/ChatComposer";
 import { ChatTaskSidebar } from "./components/ChatTaskSidebar";
 import { PreflightCard, ExecutionCard, W4PreflightCard, W4ExecutionCard } from "./ResultCards";
 
@@ -66,6 +67,10 @@ export function ChatClient() {
   const [input, setInput] = useState("");
   const [isSending, setIsSending] = useState(false);
   const [selectedTaskId, setSelectedTaskId] = useState(DEFAULT_CHAT_TASK_ID);
+  // 공통 첨부 기반(Step 1) — 실제 File 객체를 Client state로만 들고 있는다.
+  // 새로고침하면 사라지는 일시 상태이고, 이번 Step에서는 서버로 보내지 않는다.
+  const [attachedFile, setAttachedFile] = useState<File | null>(null);
+  const [attachmentError, setAttachmentError] = useState<string | null>(null);
 
   const selectedTask = CHAT_TASKS.find((t) => t.id === selectedTaskId);
 
@@ -76,11 +81,46 @@ export function ChatClient() {
   function handleSelectTask(taskId: string) {
     if (taskId === selectedTaskId) return;
     setSelectedTaskId(taskId);
+    // Skill을 바꾸면 이전 Skill 맥락의 첨부를 그대로 들고 가지 않는다 —
+    // 첨부를 지원하지 않는 Skill로 전환했을 때 잘못된 첨부 상태가 남는
+    // 것을 막는 가장 단순한 규칙(전환 시 항상 초기화).
+    setAttachedFile(null);
+    setAttachmentError(null);
     const task = CHAT_TASKS.find((t) => t.id === taskId);
     if (task?.instructionMessage) {
       appendAssistantMessage({ kind: "TEXT", message: task.instructionMessage });
     }
   }
+
+  function handleAttachFile(file: File) {
+    if (!selectedTask?.attachmentsEnabled) return;
+    const result = validateAttachment(file, {
+      acceptedFileTypes: selectedTask.acceptedFileTypes ?? [],
+      maxFileSize: selectedTask.maxFileSize ?? 0,
+    });
+    if (!result.ok) {
+      setAttachedFile(null);
+      setAttachmentError(result.error ?? "첨부할 수 없는 파일입니다.");
+      return;
+    }
+    setAttachedFile(file);
+    setAttachmentError(null);
+  }
+
+  function handleRemoveAttachment() {
+    setAttachedFile(null);
+    setAttachmentError(null);
+  }
+
+  const attachment: ChatComposerAttachment | undefined = selectedTask?.attachmentsEnabled
+    ? {
+        policy: { acceptedFileTypes: selectedTask.acceptedFileTypes ?? [], maxFileSize: selectedTask.maxFileSize ?? 0 },
+        file: attachedFile,
+        error: attachmentError,
+        onSelect: handleAttachFile,
+        onRemove: handleRemoveAttachment,
+      }
+    : undefined;
 
   /**
    * W3/W4 Preflight가 READY(+W4는 이미 최신 상태가 아닐 때)면 확인 버튼 없이
@@ -177,6 +217,7 @@ export function ChatClient() {
               disabled={!input.trim() || isSending}
               sending={isSending}
               placeholder={selectedTask?.composerPlaceholder}
+              attachment={attachment}
             />
           </div>
         </div>

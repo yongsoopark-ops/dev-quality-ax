@@ -30,6 +30,16 @@ export interface ChatTaskDefinition {
   instructionMessage?: string;
   /** 이 작업이 선택된 동안 Composer에 표시할 placeholder. 없으면 기본 placeholder를 쓴다. */
   composerPlaceholder?: string;
+  /**
+   * 공통 파일 첨부 기반(Step 1) — 이 Skill이 Composer에 첨부 버튼을 노출할지.
+   * 없거나 false면 첨부 UI 자체가 뜨지 않는다(W3/W4는 URL 전용이라 비활성).
+   * UI 쪽은 이 필드만 보고 분기하며 Skill id를 직접 검사하지 않는다.
+   */
+  attachmentsEnabled?: boolean;
+  /** 허용 확장자(소문자, 점 포함). attachmentsEnabled일 때만 의미가 있다. */
+  acceptedFileTypes?: string[];
+  /** 허용 최대 파일 크기(byte). attachmentsEnabled일 때만 의미가 있다. */
+  maxFileSize?: number;
 }
 
 export const CHAT_TASKS: ChatTaskDefinition[] = [
@@ -69,6 +79,11 @@ export const CHAT_TASKS: ChatTaskDefinition[] = [
     status: "coming-soon",
     icon: "📝",
     instructionMessage: "회의록 자동 작성 기능은 준비 중입니다.",
+    // 실제 생성 로직은 아직 없지만(Coming Soon), 향후 이 Skill이 TXT를
+    // 입력받을 수 있도록 첨부 기반은 지금 켜 둔다(요청사항: V1 TXT 1개, 5MB).
+    attachmentsEnabled: true,
+    acceptedFileTypes: [".txt"],
+    maxFileSize: 5 * 1024 * 1024,
   },
 ];
 
