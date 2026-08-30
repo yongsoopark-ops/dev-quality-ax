@@ -40,6 +40,13 @@ export interface ChatTaskDefinition {
   acceptedFileTypes?: string[];
   /** 허용 최대 파일 크기(byte). attachmentsEnabled일 때만 의미가 있다. */
   maxFileSize?: number;
+  /**
+   * Step 2 — 이 Skill은 첨부 파일 자체가 입력이라, 텍스트 없이 첨부만으로도
+   * Send를 허용할지. attachmentsEnabled가 false면 의미 없다. 기본값은
+   * false(첨부가 있어도 여전히 텍스트가 있어야 Send 가능) — W3/W4/일반
+   * 채팅의 기존 Send 조건을 그대로 지키기 위한 명시적 opt-in이다.
+   */
+  attachmentCanReplaceText?: boolean;
 }
 
 export const CHAT_TASKS: ChatTaskDefinition[] = [
@@ -78,12 +85,16 @@ export const CHAT_TASKS: ChatTaskDefinition[] = [
     category: "FUTURE",
     status: "coming-soon",
     icon: "📝",
-    instructionMessage: "회의록 자동 작성 기능은 준비 중입니다.",
-    // 실제 생성 로직은 아직 없지만(Coming Soon), 향후 이 Skill이 TXT를
-    // 입력받을 수 있도록 첨부 기반은 지금 켜 둔다(요청사항: V1 TXT 1개, 5MB).
+    // Step 2: 실제 회의록 생성(AI 연동)은 아직 없지만, 입력 흐름(TXT 업로드
+    // → 접수 확인)은 연결됐다 — 그래서 안내가 "준비 중"이 아니라 실제로
+    // 무엇을 해야 하는지를 알려준다. Sidebar의 "Coming soon" 뱃지는 최종
+    // 생성 기능이 아직 없다는 뜻으로 그대로 둔다(상태 자체는 안 바꿈).
+    instructionMessage: "회의 원문 TXT 파일을 업로드해 주세요.",
+    // 첨부 기반(Step 1: V1 TXT 1개, 5MB)은 그대로 유지.
     attachmentsEnabled: true,
     acceptedFileTypes: [".txt"],
     maxFileSize: 5 * 1024 * 1024,
+    attachmentCanReplaceText: true,
   },
 ];
 
