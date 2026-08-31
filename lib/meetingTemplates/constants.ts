@@ -21,31 +21,27 @@ export const MEETING_TEMPLATE_TYPE_OPTIONS: MeetingTemplateType[] = [
   "EXECUTIVE_WEEKLY_REPORT",
 ];
 
-/** Step 5B-3(Editor) — "블록 추가" 목록/블록 헤더에 쓰는 라벨. block.type
- * 자체는 추가 시점에만 고르고 이후에는 바꿀 수 없다(요청사항: AI/자동화가
- * 의존하는 식별값 보호) — 그래서 이 라벨은 Editor의 "추가" 버튼과 각 블록의
- * 읽기 전용 타입 표시에만 쓰인다. */
+/**
+ * Step 5B-3(원래 구조화 Editor)에서 쓰던 8종 + table 라벨. Step 5B-3.2부터
+ * Editor는 이 중 heading/text/list/table 4종만 사용자에게 노출한다
+ * (meeting-info/agenda-list/project-list/action-item-list/review-list는
+ * "회의록 내부 block type을 사용자가 선택하지 않게 한다"는 요청사항에 따라
+ * Editor의 "+ 추가" 메뉴에서 제거됨) — 다만 타입/검증/DB 구조 자체는
+ * 그대로 남겨둔다(요청사항: 당장 삭제하지 않는다). 이 라벨 맵은 여전히
+ * block.type의 사람이 읽을 수 있는 이름이 필요할 때(예: 디버깅) 참조용으로
+ * 남긴다 — Editor의 실제 "추가" 메뉴는 아래 lib/meetingTemplates/defaults.ts의
+ * FREE_BLOCK_MENU_ITEMS를 쓴다. */
 export const BLOCK_TYPE_LABELS: Record<MeetingTemplateBlockType, string> = {
   heading: "제목",
   text: "텍스트",
   list: "목록",
+  table: "표",
   "meeting-info": "회의 정보",
   "agenda-list": "안건 목록",
   "project-list": "프로젝트 목록",
   "action-item-list": "Action Item 목록",
   "review-list": "재검토 필요 목록",
 };
-
-export const BLOCK_TYPE_OPTIONS: MeetingTemplateBlockType[] = [
-  "heading",
-  "text",
-  "list",
-  "meeting-info",
-  "agenda-list",
-  "project-list",
-  "action-item-list",
-  "review-list",
-];
 
 export const BLOCK_SOURCE_LABELS: Record<MeetingTemplateBlockSource, string> = {
   AUTO: "자동(Schedule 등)",

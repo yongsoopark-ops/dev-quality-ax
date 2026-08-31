@@ -11,6 +11,7 @@ export type MeetingTemplateBlockType =
   | "heading"
   | "text"
   | "list"
+  | "table"
   | "meeting-info"
   | "agenda-list"
   | "project-list"
@@ -72,14 +73,37 @@ export interface TextBlock extends MeetingTemplateBlockBase {
   config: TextBlockConfig;
 }
 
+/** Step 5B-3.2.1(목록 들여쓰기) — 항목 하나 = 텍스트 + depth(들여쓰기 단계,
+ * 0부터 시작)뿐이다. "중첩 목록"이라는 별도 block을 만들지 않고, 기존 list
+ * block 안에서 depth만으로 표현한다(요청사항). depth 상한은
+ * lib/meetingTemplates/validate.ts의 MAX_LIST_DEPTH를 따른다. */
+export interface ListItemNode {
+  text: string;
+  depth: number;
+}
 export interface ListBlockConfig {
   style: "bullet" | "numbered";
-  items?: string[];
+  /** 예전 형식(문자열 배열, depth 없음)도 읽을 때는 depth 0으로 취급해
+   * 그대로 받아들인다 — validate.ts가 이 하위호환을 처리한다. Editor가 새로
+   * 만들거나 저장하는 값은 항상 ListItemNode[]다. */
+  items?: ListItemNode[];
   icon?: BlockIcon;
 }
 export interface ListBlock extends MeetingTemplateBlockBase {
   type: "list";
   config: ListBlockConfig;
+}
+
+/** Step 5B-3.2(자유 문서 Editor) — Word처럼 자유롭게 만드는 실제 표. 행/열
+ * 구조만 있고 값은 전부 사용자가 입력한 문자열이다(project-list/
+ * action-item-list의 columns처럼 "열 정의"만 있는 게 아니라 실제 셀 값을
+ * 담는다) — rows[0]이 특별히 헤더 행인 것은 아니고, 그냥 첫 행일 뿐이다. */
+export interface TableBlockConfig {
+  rows: string[][];
+}
+export interface TableBlock extends MeetingTemplateBlockBase {
+  type: "table";
+  config: TableBlockConfig;
 }
 
 export interface MeetingInfoField {
@@ -92,6 +116,9 @@ export interface MeetingInfoField {
 export interface MeetingInfoBlockConfig {
   /** 배열 순서가 곧 표시 순서(field order)다. */
   fields: MeetingInfoField[];
+  /** Step 5B-3.1(문서형 Editor) — 이 섹션 자체의 아이콘(예: "📅"). 필드별
+   * icon(MeetingInfoField.icon)과는 별개다. */
+  icon?: BlockIcon;
 }
 export interface MeetingInfoBlock extends MeetingTemplateBlockBase {
   type: "meeting-info";
@@ -115,6 +142,10 @@ export interface TemplateTableColumn {
 export interface ProjectListBlockConfig {
   /** 배열 순서가 곧 표시 열 순서다(field order). */
   columns: TemplateTableColumn[];
+  /** Step 5B-3.1(문서형 Editor) — 이 섹션 자체의 아이콘(예: "📦"). 같은
+   * project-list 타입이어도 섹션마다("정규 프로젝트" vs "서브 프로젝트")
+   * 다른 아이콘을 가질 수 있다. */
+  icon?: BlockIcon;
 }
 export interface ProjectListBlock extends MeetingTemplateBlockBase {
   type: "project-list";
@@ -123,6 +154,7 @@ export interface ProjectListBlock extends MeetingTemplateBlockBase {
 
 export interface ActionItemListBlockConfig {
   columns: TemplateTableColumn[];
+  icon?: BlockIcon;
 }
 export interface ActionItemListBlock extends MeetingTemplateBlockBase {
   type: "action-item-list";
@@ -134,6 +166,7 @@ export interface ReviewListBlockConfig {
    * "향후 재검토 필요" 영역이다. 실제 이월 계산 로직은 이번 Step 범위 밖이고,
    * 여기서는 그런 성격의 block임을 구조적으로 표현만 한다. */
   accumulatesAcrossMeetings?: boolean;
+  icon?: BlockIcon;
 }
 export interface ReviewListBlock extends MeetingTemplateBlockBase {
   type: "review-list";
@@ -144,6 +177,7 @@ export type MeetingTemplateBlock =
   | HeadingBlock
   | TextBlock
   | ListBlock
+  | TableBlock
   | MeetingInfoBlock
   | AgendaListBlock
   | ProjectListBlock

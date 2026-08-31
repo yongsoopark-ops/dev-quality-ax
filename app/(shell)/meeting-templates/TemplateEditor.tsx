@@ -2,8 +2,7 @@
 
 import { useState } from "react";
 import { DndContext, PointerSensor, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
-import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
-import { CSS } from "@dnd-kit/utilities";
+import { SortableContext, arrayMove, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import {
   createMeetingTemplateAction,
   deleteMeetingTemplateAction,
@@ -11,110 +10,59 @@ import {
   updateMeetingTemplateAction,
   type MeetingTemplateInfo,
 } from "@/lib/meetingTemplates/actions";
-import {
-  BLOCK_SOURCE_LABELS,
-  BLOCK_SOURCE_OPTIONS,
-  BLOCK_TYPE_LABELS,
-  BLOCK_TYPE_OPTIONS,
-  MEETING_TEMPLATE_TYPE_LABELS,
-  MEETING_TEMPLATE_TYPE_OPTIONS,
-} from "@/lib/meetingTemplates/constants";
-import { createDefaultBlock } from "@/lib/meetingTemplates/defaults";
-import type { MeetingTemplateBlock, MeetingTemplateBlockSource } from "@/lib/meetingTemplates/types";
+import { MEETING_TEMPLATE_TYPE_LABELS, MEETING_TEMPLATE_TYPE_OPTIONS } from "@/lib/meetingTemplates/constants";
+import { FREE_BLOCK_MENU_ITEMS } from "@/lib/meetingTemplates/defaults";
+import type { MeetingTemplateBlock } from "@/lib/meetingTemplates/types";
 import type { MeetingTemplateType } from "@/app/generated/prisma/enums";
-import { BlockConfigEditor } from "./BlockConfigEditor";
+import { DocumentSection } from "./DocumentSection";
 
-const inputClass = "w-full rounded-md border border-navy-100 px-2.5 py-1.5 text-sm";
-const labelClass = "text-xs font-medium text-navy-950/60";
-
-function BlockRow({
-  block,
-  onUpdate,
-  onRemove,
-}: {
-  block: MeetingTemplateBlock;
-  onUpdate: (patch: Record<string, unknown>) => void;
-  onRemove: () => void;
-}) {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: block.id });
-  const [expanded, setExpanded] = useState(true);
-
+/**
+ * Step 5B-3.2(자유 문서 Editor) — "+ 섹션 추가" 메뉴가 이제 일반 문서 요소
+ * 5개(제목/본문/글머리표 목록/번호 목록/표)만 보여준다(요청사항: 회의록
+ * 내부 block type을 사용자가 선택하지 않게 한다). meeting-info/agenda-list/
+ * project-list/action-item-list/review-list는 더 이상 이 메뉴에 없다.
+ */
+function AddSectionMenu({ onAdd }: { onAdd: (create: (order: number) => MeetingTemplateBlock) => void }) {
+  const [open, setOpen] = useState(false);
   return (
-    <div
-      ref={setNodeRef}
-      style={{ transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.5 : 1 }}
-      className="space-y-2 rounded-md border border-navy-100 bg-white p-3"
-    >
-      <div className="flex items-center gap-2">
-        <span
-          {...attributes}
-          {...listeners}
-          className="shrink-0 cursor-grab px-1 text-navy-950/30 hover:text-navy-950/60 active:cursor-grabbing"
-          aria-label="드래그하여 순서 변경"
-        >
-          ⠿
-        </span>
-        <span className="shrink-0 rounded bg-navy-50 px-2 py-0.5 text-[11px] font-medium text-navy-950/50" title="블록 타입(변경 불가)">
-          {BLOCK_TYPE_LABELS[block.type]}
-        </span>
-        <input
-          className="min-w-0 flex-1 rounded-md border border-navy-100 px-2.5 py-1 text-sm font-medium"
-          value={block.label}
-          onChange={(e) => onUpdate({ label: e.target.value })}
-          placeholder="블록 제목(관리용)"
-        />
-        <button type="button" onClick={() => setExpanded((v) => !v)} className="shrink-0 text-xs text-navy-950/40 hover:text-navy-950">
-          {expanded ? "접기" : "펼치기"}
-        </button>
-        <button type="button" onClick={onRemove} className="shrink-0 text-xs text-red-600 hover:underline">
-          삭제
-        </button>
-      </div>
-
-      {expanded && (
-        <>
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-xs text-navy-950/70">
-            <label className="flex items-center gap-1">
-              <input type="checkbox" checked={block.required} onChange={(e) => onUpdate({ required: e.target.checked })} />
-              필수
-            </label>
-            <label className="flex items-center gap-1">
-              <input type="checkbox" checked={block.aiEditable} onChange={(e) => onUpdate({ aiEditable: e.target.checked })} />
-              AI 보완 허용
-            </label>
-            <label className="flex items-center gap-1">
-              <input type="checkbox" checked={block.userEditable} onChange={(e) => onUpdate({ userEditable: e.target.checked })} />
-              사용자 편집 허용
-            </label>
-            <label className="flex items-center gap-1">
-              출처
-              <select
-                className="rounded border border-navy-100 px-1.5 py-0.5 text-xs"
-                value={block.source}
-                onChange={(e) => onUpdate({ source: e.target.value as MeetingTemplateBlockSource })}
-              >
-                {BLOCK_SOURCE_OPTIONS.map((s) => (
-                  <option key={s} value={s}>
-                    {BLOCK_SOURCE_LABELS[s]}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </div>
-          <BlockConfigEditor block={block} onChange={(config) => onUpdate({ config })} />
-        </>
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="w-full rounded-md border border-dashed border-navy-200 py-2 text-sm text-navy-950/40 hover:border-navy-300 hover:bg-navy-50/60 hover:text-navy-950/70"
+      >
+        + 추가
+      </button>
+      {open && (
+        <div className="absolute left-0 top-full z-20 mt-1 grid w-48 grid-cols-1 gap-0.5 rounded-md border border-navy-100 bg-white p-1.5 shadow-lg">
+          {FREE_BLOCK_MENU_ITEMS.map((item) => (
+            <button
+              key={item.key}
+              type="button"
+              onClick={() => {
+                onAdd(item.create);
+                setOpen(false);
+              }}
+              className="flex items-center gap-2 rounded px-2 py-1.5 text-left text-sm text-navy-950/80 hover:bg-navy-50"
+            >
+              <span className="w-4 text-center">{item.icon}</span>
+              {item.label}
+            </button>
+          ))}
+        </div>
       )}
     </div>
   );
 }
 
 /**
- * Step 5B-3 — Template 1건 생성/편집. template이 null이면 "새 양식 생성"
- * 모드(첫 저장 전까지 실제 Row가 없다), 값이 있으면 기존 Row 편집이다.
- * "저장 성공 후 현재 편집 상태 유지"(요청사항) — 저장해도 화면을 닫지 않고
- * 그대로 계속 편집할 수 있게 한다. 새로 만든 Template이 첫 저장에 성공하면
- * 그 결과(id 포함)로 currentTemplate을 갱신해, 다음 저장부터는 create가
- * 아니라 update를 호출한다.
+ * Step 5B-3.1(문서형 Editor 재설계) — 데이터 구조(MeetingTemplateBlock 등)와
+ * 저장/활성 전환 로직은 Step 5B-3과 동일하게 유지한다. 바뀐 것은 오직
+ * "어떻게 보여주고 편집하는지"뿐이다 — 예전엔 각 block이 "타입 라벨 +
+ * 체크박스 여러 개 + 설정 폼"으로 늘어선 개발자용 폼이었다면, 이제는 하나의
+ * 문서(Canvas)를 Word/Notion처럼 직접 편집하는 것처럼 보인다. block.type/
+ * source/aiEditable/userEditable/config는 그대로 저장되고, 그대로
+ * validateMeetingTemplateSchema를 통과해야 저장된다 — 화면만 바뀌었다.
  */
 export function TemplateEditor({
   template,
@@ -143,11 +91,9 @@ export function TemplateEditor({
 
   function updateBlock(id: string, patch: Record<string, unknown>) {
     setJustSaved(false);
-    // block.id로 찾은 대상에만 patch를 병합한다 — patch는 항상 BlockConfigEditor/
-    // 이 파일의 체크박스·select들이 그 block과 같은 type에 맞춰 만든 값이라
-    // (BlockConfigEditor가 block.type으로 분기해서 호출) 실제로는 항상 유효한
-    // MeetingTemplateBlock 모양이 된다 — discriminated union이라 TS가 일반화된
-    // patch 타입을 정적으로 좁히지 못해 여기 한 곳에서만 단언한다.
+    // discriminated union이라 TS가 일반화된 patch 타입을 정적으로 좁히지
+    // 못해 여기 한 곳에서만 단언한다 — patch는 항상 SectionBody/
+    // SectionSettingsPopover가 그 block과 같은 type에 맞춰 만든 값이다.
     setBlocks((prev) => prev.map((b) => (b.id === id ? ({ ...b, ...patch } as MeetingTemplateBlock) : b)));
   }
 
@@ -156,9 +102,9 @@ export function TemplateEditor({
     setBlocks((prev) => prev.filter((b) => b.id !== id).map((b, i) => ({ ...b, order: i })));
   }
 
-  function addBlock(type: MeetingTemplateBlock["type"]) {
+  function addBlock(create: (order: number) => MeetingTemplateBlock) {
     setJustSaved(false);
-    setBlocks((prev) => [...prev, createDefaultBlock(type, prev.length)]);
+    setBlocks((prev) => [...prev, create(prev.length)]);
   }
 
   function handleDragEnd(event: DragEndEvent) {
@@ -243,90 +189,19 @@ export function TemplateEditor({
   }
 
   return (
-    <div className="space-y-4 pb-8">
-      <div className="flex items-center justify-between">
+    <div className="space-y-3 pb-8">
+      {/* 문서 바깥 툴바 — Template 자체의 메타데이터/동작이라 "문서 안"에는
+          두지 않는다(요청사항: 문서 캔버스에는 실제 문서 내용만). */}
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <button type="button" onClick={onClose} className="text-xs text-navy-950/50 hover:text-navy-950">
           ← 목록으로
         </button>
-        {currentTemplate?.isActive && (
-          <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[11px] font-medium text-emerald-700">
-            사용 중인 Template
-          </span>
-        )}
-      </div>
-
-      <div className="grid grid-cols-2 gap-3 rounded-md border border-navy-100 bg-navy-50/60 p-3">
-        <div className="space-y-1">
-          <label className={labelClass}>Template 이름</label>
-          <input
-            className={inputClass}
-            value={name}
-            onChange={(e) => {
-              setName(e.target.value);
-              setJustSaved(false);
-            }}
-            placeholder="예: 파트 주간회의 기본 양식"
-          />
-        </div>
-        <div className="space-y-1">
-          <label className={labelClass}>회의 유형</label>
-          <select
-            className={inputClass}
-            value={meetingType}
-            onChange={(e) => {
-              setMeetingType(e.target.value as MeetingTemplateType);
-              setJustSaved(false);
-            }}
-          >
-            {MEETING_TEMPLATE_TYPE_OPTIONS.map((t) => (
-              <option key={t} value={t}>
-                {MEETING_TEMPLATE_TYPE_LABELS[t]}
-              </option>
-            ))}
-          </select>
-        </div>
-      </div>
-
-      <div className="space-y-2">
-        <DndContext sensors={sensors} onDragEnd={handleDragEnd}>
-          <SortableContext items={blocks.map((b) => b.id)} strategy={verticalListSortingStrategy}>
-            {blocks.map((block) => (
-              <BlockRow
-                key={block.id}
-                block={block}
-                onUpdate={(patch) => updateBlock(block.id, patch)}
-                onRemove={() => removeBlock(block.id)}
-              />
-            ))}
-          </SortableContext>
-        </DndContext>
-
-        {blocks.length === 0 && (
-          <p className="rounded-md border border-dashed border-navy-200 p-4 text-center text-xs text-navy-950/40">
-            아직 블록이 없습니다. 아래에서 블록을 추가하세요.
-          </p>
-        )}
-
-        <div className="flex flex-wrap gap-1.5 rounded-md border border-navy-100 p-2.5">
-          <span className="mr-1 self-center text-xs text-navy-950/50">블록 추가:</span>
-          {BLOCK_TYPE_OPTIONS.map((type) => (
-            <button
-              key={type}
-              type="button"
-              onClick={() => addBlock(type)}
-              className="rounded-md border border-navy-100 px-2.5 py-1 text-xs text-navy-950/70 hover:bg-navy-50"
-            >
-              + {BLOCK_TYPE_LABELS[type]}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {error && <p className="text-xs text-red-600">{error}</p>}
-      {justSaved && !error && <p className="text-xs text-emerald-700">저장되었습니다.</p>}
-
-      <div className="flex flex-wrap items-center justify-between gap-2 border-t border-navy-100 pt-3">
-        <div>
+        <div className="flex flex-wrap items-center gap-2">
+          {currentTemplate?.isActive && (
+            <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[11px] font-medium text-emerald-700">
+              사용 중인 Template
+            </span>
+          )}
           {currentTemplate && (
             <button
               type="button"
@@ -337,8 +212,6 @@ export function TemplateEditor({
               {deleting ? "삭제 중..." : "삭제"}
             </button>
           )}
-        </div>
-        <div className="flex items-center gap-2">
           {currentTemplate && !currentTemplate.isActive && (
             <button
               type="button"
@@ -357,6 +230,59 @@ export function TemplateEditor({
           >
             {saving ? "저장 중..." : "저장"}
           </button>
+        </div>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2 rounded-md border border-navy-100 bg-navy-50/60 px-3 py-2">
+        <input
+          className="min-w-[160px] flex-1 rounded-md border border-navy-100 bg-white px-2.5 py-1.5 text-sm"
+          value={name}
+          onChange={(e) => {
+            setName(e.target.value);
+            setJustSaved(false);
+          }}
+          placeholder="Template 이름(예: 파트 주간회의 기본 양식)"
+        />
+        <select
+          className="rounded-md border border-navy-100 bg-white px-2.5 py-1.5 text-sm"
+          value={meetingType}
+          onChange={(e) => {
+            setMeetingType(e.target.value as MeetingTemplateType);
+            setJustSaved(false);
+          }}
+        >
+          {MEETING_TEMPLATE_TYPE_OPTIONS.map((t) => (
+            <option key={t} value={t}>
+              {MEETING_TEMPLATE_TYPE_LABELS[t]}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      {error && <p className="text-xs text-red-600">{error}</p>}
+      {justSaved && !error && <p className="text-xs text-emerald-700">저장되었습니다.</p>}
+
+      {/* 문서 Canvas — Word/Notion처럼 종이 위에 섹션들이 쌓인 것처럼 보인다.
+          내부적으로는 각 섹션이 여전히 하나의 MeetingTemplateBlock이다. */}
+      <div className="mx-auto max-w-[720px] rounded-lg border border-navy-100 bg-white p-8 shadow-sm">
+        <DndContext sensors={sensors} onDragEnd={handleDragEnd}>
+          <SortableContext items={blocks.map((b) => b.id)} strategy={verticalListSortingStrategy}>
+            <div className="space-y-3">
+              {blocks.map((block) => (
+                <DocumentSection key={block.id} block={block} onUpdate={(patch) => updateBlock(block.id, patch)} onRemove={() => removeBlock(block.id)} />
+              ))}
+            </div>
+          </SortableContext>
+        </DndContext>
+
+        {blocks.length === 0 && (
+          <p className="mb-3 rounded-md border border-dashed border-navy-200 p-4 text-center text-xs text-navy-950/40">
+            빈 문서입니다. 아래 &quot;+ 추가&quot;로 제목/본문/목록/표를 자유롭게 써 내려가세요.
+          </p>
+        )}
+
+        <div className="mt-3">
+          <AddSectionMenu onAdd={addBlock} />
         </div>
       </div>
     </div>

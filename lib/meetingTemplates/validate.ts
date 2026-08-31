@@ -1,9 +1,15 @@
 import type {
+  ListItemNode,
   MeetingTemplateBlock,
   MeetingTemplateBlockSource,
   MeetingTemplateBlockType,
   MeetingTemplateSchema,
 } from "./types";
+
+/** Step 5B-3.2.1(목록 들여쓰기) — Tab으로 늘릴 수 있는 최대 깊이(0부터 시작).
+ * 2면 0/1/2 세 단계까지 허용한다(요청사항: "최대 depth는 2~3단계 정도로
+ * 제한해도 됨"). */
+export const MAX_LIST_DEPTH = 2;
 
 /**
  * DB(templateSchema)에 저장하기 전 Client가 보낸 값을 신뢰하지 않고 서버에서
@@ -14,6 +20,7 @@ const BLOCK_TYPES: readonly MeetingTemplateBlockType[] = [
   "heading",
   "text",
   "list",
+  "table",
   "meeting-info",
   "agenda-list",
   "project-list",
@@ -44,8 +51,24 @@ function isFiniteNumber(value: unknown): value is number {
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every(isString);
 }
+/** Step 5B-3.2.1(목록 들여쓰기) — 새 list item 형식. depth는 0 이상
+ * MAX_LIST_DEPTH 이하의 정수여야 한다. */
+function isListItemNode(value: unknown): value is ListItemNode {
+  return isRecord(value) && isString(value.text) && Number.isInteger(value.depth) && (value.depth as number) >= 0 && (value.depth as number) <= MAX_LIST_DEPTH;
+}
+function isListItemArray(value: unknown): value is ListItemNode[] {
+  return Array.isArray(value) && value.every(isListItemNode);
+}
+/** 5B-3.2.1 이전에 저장된 list block은 items가 depth 없는 문자열 배열이다 —
+ * 읽을 때 전부 depth 0으로 취급해 그대로 받아들인다(하위호환). */
+function normalizeListItems(items: string[] | ListItemNode[]): ListItemNode[] {
+  return items.map((item) => (typeof item === "string" ? { text: item, depth: 0 } : item));
+}
 function isTableColumns(value: unknown): value is { key: string; label: string }[] {
   return Array.isArray(value) && value.every((c) => isRecord(c) && isString(c.key) && isString(c.label));
+}
+function isStringGrid(value: unknown): value is string[][] {
+  return Array.isArray(value) && value.every(isStringArray);
 }
 
 function validateBaseFields(raw: Record<string, unknown>): raw is Record<string, unknown> & {
@@ -83,21 +106,24 @@ function validateConfig(type: MeetingTemplateBlockType, config: unknown): boolea
     case "list":
       return (
         (config.style === "bullet" || config.style === "numbered") &&
-        (config.items === undefined || isStringArray(config.items)) &&
+        (config.items === undefined || isListItemArray(config.items) || isStringArray(config.items)) &&
         isOptionalString(config.icon)
       );
+    case "table":
+      return isStringGrid(config.rows);
     case "meeting-info":
       return (
         Array.isArray(config.fields) &&
-        config.fields.every((f) => isRecord(f) && isString(f.key) && isString(f.label) && isOptionalString(f.icon))
+        config.fields.every((f) => isRecord(f) && isString(f.key) && isString(f.label) && isOptionalString(f.icon)) &&
+        isOptionalString(config.icon)
       );
     case "agenda-list":
       return isOptionalBoolean(config.numbered) && isOptionalString(config.icon);
     case "project-list":
     case "action-item-list":
-      return isTableColumns(config.columns);
+      return isTableColumns(config.columns) && isOptionalString(config.icon);
     case "review-list":
-      return isOptionalBoolean(config.accumulatesAcrossMeetings);
+      return isOptionalBoolean(config.accumulatesAcrossMeetings) && isOptionalString(config.icon);
   }
 }
 
@@ -117,6 +143,13 @@ export function validateMeetingTemplateSchema(raw: unknown): MeetingTemplateSche
     seenIds.add(entry.id);
     if (!validateConfig(entry.type, entry.config)) return null;
 
+    // 5B-3.2.1: list block의 items가 예전(depth 없는 문자열) 형식이면 여기서
+    // depth 0으로 정규화해, 이후로는 항상 ListItemNode[] 형태만 다루면 되게 한다.
+    let config = entry.config as Record<string, unknown>;
+    if (entry.type === "list" && Array.isArray(config.items)) {
+      config = { ...config, items: normalizeListItems(config.items as string[] | ListItemNode[]) };
+    }
+
     result.push({
       id: entry.id,
       type: entry.type,
@@ -126,7 +159,7 @@ export function validateMeetingTemplateSchema(raw: unknown): MeetingTemplateSche
       aiEditable: entry.aiEditable,
       userEditable: entry.userEditable,
       source: entry.source,
-      config: entry.config,
+      config,
     } as MeetingTemplateBlock);
   }
 
