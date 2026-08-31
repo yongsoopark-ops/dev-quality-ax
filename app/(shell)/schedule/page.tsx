@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { cached } from "@/lib/cache/memoCache";
 import type { TaskWithRelations } from "@/lib/schedule/types";
 import { PROJECT_CATEGORIES_CACHE_KEY } from "@/lib/schedule/constants";
+import { taskRowToRecurrenceRule } from "@/lib/schedule/recurrence";
 import { ScheduleClient } from "./ScheduleClient";
 
 export default async function SchedulePage({
@@ -47,6 +48,17 @@ export default async function SchedulePage({
         // 이력 전체(reasonText/creator 등)는 조회하지 않는다.
         scheduleRevisions: { orderBy: { revisionNo: "desc" }, take: 1, select: { startDate: true, dueDate: true } },
         _count: { select: { comments: true } },
+        // Step 5B-1(반복 일정) — Calendar가 모든 Task를 대상으로 매번 반복
+        // 회차를 계산해야 하므로 다른 lazy 필드와 달리 초기 조회에 항상 포함한다
+        // (scalar 필드라 가볍다).
+        recurrenceType: true,
+        recurrenceInterval: true,
+        recurrenceWeekdays: true,
+        recurrenceMonthlyRuleType: true,
+        recurrenceMonthDay: true,
+        recurrenceMonthlyWeekOrdinal: true,
+        recurrenceMonthlyWeekday: true,
+        recurrenceEndDate: true,
       },
     }),
     prisma.user.findMany({
@@ -85,6 +97,7 @@ export default async function SchedulePage({
       scheduleRevisions: [],
       comments: [],
       commentCount: task._count.comments,
+      recurrence: taskRowToRecurrenceRule(task),
     };
   });
 

@@ -97,6 +97,20 @@ enum NotificationType {
   MENTION
 }
 
+/// Step 5B-1(반복 일정). NONE이면 기존과 동일한 1회성 일정이다.
+enum RecurrenceType {
+  NONE
+  WEEKLY
+  MONTHLY
+}
+
+/// MONTHLY 반복에서 "매월 15일"처럼 날짜를 고정할지, "매월 첫째 주 월요일"처럼
+/// N번째 요일로 정할지 구분한다.
+enum RecurrenceMonthlyRuleType {
+  DAY_OF_MONTH
+  NTH_WEEKDAY
+}
+
 model User {
   id          String     @id @default(cuid())
   email       String     @unique
@@ -296,6 +310,33 @@ model Task {
   /// (요청사항: 삭제된 번호 재사용 금지). Soft Delete 대신 이 카운터 하나로
   /// 해결해 Revision 조회/이력 표시 코드를 전부 "살아있는 Row만" 그대로 유지한다.
   lastRevisionNo Int @default(0)
+
+  /// Step 5B-1(반복 일정) — recurrenceType=NONE(기본값)이면 기존과 완전히
+  /// 동일한 1회성 일정이다. 미래 회차를 Row로 미리 만들지 않고, Calendar
+  /// 조회 시점에 이 규칙 + startDate(첫 회차/anchor)를 기준으로 화면에 보이는
+  /// 기간만큼만 그때그때 계산해서 보여준다(lib/schedule/recurrence.ts) — 계산된
+  /// 회차는 실제 Task Row가 아니다. 그래서 Drag/Resize/Comment/Revision/Mention은
+  /// 항상 이 Task(첫 회차) 자신에만 적용되고, 그 결과(반복 규칙/일정 변경)는
+  /// 이후 모든 계산된 회차에 그대로 반영된다 — "반복 일정 전체 수정/삭제"만
+  /// 지원하는 V1 정책이다(특정 회차만 수정하는 기능은 별도 Exception 모델이
+  /// 필요해 이번 Step 범위에서 제외, 완료 보고에서 근거 설명).
+  recurrenceType RecurrenceType @default(NONE)
+  /// 반복 간격 — 2면 "격주"/"격월". V1 UI는 항상 1("매주"/"매월")만 노출하지만
+  /// 계산 로직(lib/schedule/recurrence.ts)은 이미 일반적인 간격을 지원한다.
+  recurrenceInterval Int @default(1)
+  /// WEEKLY 전용 — 반복 요일("MON"~"SUN") 배열. 그 외 recurrenceType에서는 항상 빈 배열.
+  recurrenceWeekdays String[] @default([])
+  /// MONTHLY 전용 — 날짜 고정 방식인지 N번째 요일 방식인지.
+  recurrenceMonthlyRuleType RecurrenceMonthlyRuleType?
+  /// MONTHLY + DAY_OF_MONTH 전용 — 1~31. 그 달에 해당 날짜가 없으면(예: 2월
+  /// 31일) 그 달은 건너뛰고 다음 달부터 다시 계산한다.
+  recurrenceMonthDay Int?
+  /// MONTHLY + NTH_WEEKDAY 전용 — 1~4(첫째~넷째 주) 또는 -1(마지막 주).
+  recurrenceMonthlyWeekOrdinal Int?
+  /// MONTHLY + NTH_WEEKDAY 전용 — 기준 요일("MON" 등 1개).
+  recurrenceMonthlyWeekday String?
+  /// 반복 종료일(그 날짜까지 포함). null이면 종료일 없음(무기한 반복).
+  recurrenceEndDate DateTime?
 
   creator           User                   @relation("TaskCreator", fields: [createdBy], references: [id])
   assignees         TaskAssignee[]

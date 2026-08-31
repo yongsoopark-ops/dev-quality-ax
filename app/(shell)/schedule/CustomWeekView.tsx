@@ -138,7 +138,11 @@ function EventBar({
   const dragRef = useRef<{ mode: DragMode; startX: number; colWidth: number; moved: boolean } | null>(null);
   const suppressClickRef = useRef(false);
 
-  const resizable = !NON_RESIZABLE_CATEGORIES.has(event.task.category);
+  // Step 5B-1(반복 일정) — 계산된 회차(실제 Task Row 없음)는 Drag도 Resize도
+  // 모두 막는다. Month View(CalendarView.tsx의 draggableAccessor/
+  // resizableAccessor)와 동일한 기준이다.
+  const draggable = !event.isRecurringOccurrence;
+  const resizable = draggable && !NON_RESIZABLE_CATEGORIES.has(event.task.category);
   const overdue = isTaskOverdue(event.task.dueDate, event.task.status);
   const done = event.task.status === "DONE";
   const onHold = event.task.status === TaskStatus.ON_HOLD;
@@ -213,7 +217,7 @@ function EventBar({
         if (suppressClickRef.current) return;
         onSelectEvent(event);
       }}
-      onPointerDown={(e) => beginDrag(e, "move")}
+      onPointerDown={draggable ? (e) => beginDrag(e, "move") : undefined}
       className="group relative z-10 mx-0.5 my-0.5 overflow-hidden text-ellipsis whitespace-nowrap rounded px-1.5 text-left text-xs font-medium"
       style={{
         gridColumn: `${displayStartCol + 1} / ${displayEndCol + 1}`,
@@ -228,7 +232,7 @@ function EventBar({
         textDecoration: done ? "line-through" : undefined,
         height: ROW_HEIGHT - 4,
         lineHeight: `${ROW_HEIGHT - 4}px`,
-        cursor: preview?.mode === "move" ? "grabbing" : "grab",
+        cursor: !draggable ? "pointer" : preview?.mode === "move" ? "grabbing" : "grab",
       }}
       title={event.title}
     >

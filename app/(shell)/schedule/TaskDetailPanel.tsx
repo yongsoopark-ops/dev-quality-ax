@@ -38,6 +38,7 @@ import {
   updateTaskScheduleRevisionAction,
 } from "./actions";
 import { DateTextInput } from "./DateTextInput";
+import { RecurrenceFields } from "./RecurrenceFields";
 import { TimeSelect } from "./TimeSelect";
 
 /** 전역 성능 Step(JS Bundle 축소) — UpdateModal은 Tiptap(RichTextEditor)을 정적
@@ -95,6 +96,13 @@ function buildInitialInput(task: TaskWithRelations | null, defaults?: { startDat
       meetingDate: defaults?.startDate ?? "",
       meetingStartTime: "",
       location: "",
+      recurrenceType: "NONE",
+      recurrenceWeekdays: [],
+      recurrenceMonthlyRuleType: "DAY_OF_MONTH",
+      recurrenceMonthDay: "",
+      recurrenceMonthlyWeekOrdinal: "",
+      recurrenceMonthlyWeekday: "MON",
+      recurrenceEndDate: "",
     };
   }
   return {
@@ -116,6 +124,13 @@ function buildInitialInput(task: TaskWithRelations | null, defaults?: { startDat
     meetingDate: toLocalDateString(task.meetingDetail?.time ?? null) || task.dueDate.slice(0, 10),
     meetingStartTime: toLocalTimeString(task.meetingDetail?.time ?? null),
     location: task.meetingDetail?.location ?? "",
+    recurrenceType: task.recurrence.type,
+    recurrenceWeekdays: task.recurrence.weekdays,
+    recurrenceMonthlyRuleType: task.recurrence.monthlyRuleType ?? "DAY_OF_MONTH",
+    recurrenceMonthDay: task.recurrence.monthDay != null ? String(task.recurrence.monthDay) : "",
+    recurrenceMonthlyWeekOrdinal: task.recurrence.monthlyWeekOrdinal != null ? String(task.recurrence.monthlyWeekOrdinal) : "",
+    recurrenceMonthlyWeekday: task.recurrence.monthlyWeekday ?? "MON",
+    recurrenceEndDate: task.recurrence.endDate ? task.recurrence.endDate.slice(0, 10) : "",
   };
 }
 
@@ -807,6 +822,13 @@ export function TaskDetailPanel({
 
   async function handleDelete() {
     if (!task) return;
+    // Step 5B-1(반복 일정) — 계산된 회차는 실제 Row가 아니라 "이 회차만 삭제"가
+    // 없다(V1 정책: 반복 일정 전체 삭제만 지원). 삭제 전 명확히 경고해 실수로
+    // 전체 반복이 사라지는 것을 막는다. 반복이 아닌 기존 일정은 이 확인창 자체가
+    // 뜨지 않아 기존 동작과 완전히 동일하다.
+    if (task.recurrence.type !== "NONE" && !window.confirm("이 일정은 반복 일정입니다. 삭제하면 모든 반복 회차가 함께 삭제됩니다. 계속하시겠습니까?")) {
+      return;
+    }
     setDeleting(true);
     try {
       const res = await deleteTaskAction(task.id);
@@ -1025,6 +1047,16 @@ export function TaskDetailPanel({
                 </div>
               )}
             </FormRow>
+          )}
+
+          {/* Step 5B-1(반복 일정) — 업무 구분(MEETING 포함)과 무관하게 공용으로
+              둔다. 위쪽 "일정"/"미팅 날짜" 중 어느 쪽이든 그 바로 아래 한 곳에서만
+              렌더한다(중복 렌더 방지). */}
+          <RecurrenceFields input={input} onChange={set} />
+          {mode === "edit" && input.recurrenceType !== "NONE" && (
+            <p className="text-[11px] text-navy-950/40">
+              이 반복 규칙을 수정하면 전체 반복 일정에 적용됩니다. 특정 회차만 따로 수정하는 기능은 아직 지원하지 않습니다.
+            </p>
           )}
 
           {/* Task.memo(단순 textarea)는 Comment/Update 시스템으로 대체됐다. 실사용

@@ -1,4 +1,5 @@
 import type { Role, TaskCategory, TaskStatus } from "@/app/generated/prisma/enums";
+import type { RecurrenceRule, Weekday } from "@/lib/schedule/recurrence";
 
 export interface ScheduleUser {
   id: string;
@@ -105,6 +106,10 @@ export interface TaskWithRelations {
    * 본문/작성자 조인 없음)로 채워진다. Update Modal을 한 번이라도 열어
    * comments가 실제로 채워지면 그 이후에는 comments 기준으로 다시 계산한다. */
   commentCount: number;
+  /** Step 5B-1(반복 일정) — recurrenceType이 "NONE"이면 기존과 동일한 1회성
+   * 일정이다. scalar 필드라 가벼워 다른 lazy 필드와 달리 초기 조회에 항상
+   * 포함된다(Calendar가 모든 Task를 대상으로 매번 반복 회차를 계산해야 하므로). */
+  recurrence: RecurrenceRule;
 }
 
 /** Task Modal을 열 때 getTaskDetailAction으로 조회하는 Lazy 상세 — TaskWithRelations의
@@ -145,4 +150,15 @@ export interface TaskFormInput {
   meetingDate: string;
   meetingStartTime: string;
   location: string;
+  /** Step 5B-1(반복 일정) — 기본값 "NONE"(반복 없음, 기존과 동일). Form 입력
+   * 편의를 위해 monthDay/monthlyWeekOrdinal은 문자열로 두고(select value), 실제
+   * 저장 직전(actions.ts)에 숫자로 변환한다. */
+  recurrenceType: "NONE" | "WEEKLY" | "MONTHLY";
+  recurrenceWeekdays: Weekday[];
+  recurrenceMonthlyRuleType: "DAY_OF_MONTH" | "NTH_WEEKDAY";
+  recurrenceMonthDay: string;
+  recurrenceMonthlyWeekOrdinal: string;
+  recurrenceMonthlyWeekday: Weekday;
+  /** ""이면 종료일 없음(무기한 반복). */
+  recurrenceEndDate: string;
 }

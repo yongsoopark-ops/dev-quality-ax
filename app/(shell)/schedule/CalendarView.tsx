@@ -3,12 +3,12 @@
 import { useMemo, useState } from "react";
 import { Calendar, dateFnsLocalizer, type DateHeaderProps, type SlotInfo, type View } from "react-big-calendar";
 import withDragAndDrop, { type EventInteractionArgs } from "react-big-calendar/lib/addons/dragAndDrop";
-import { format, getDay, isSameDay, parse, startOfWeek } from "date-fns";
+import { addDays, format, getDay, isSameDay, parse, startOfWeek } from "date-fns";
 import { ko } from "date-fns/locale";
 import "react-big-calendar/lib/css/react-big-calendar.css";
 import "react-big-calendar/lib/addons/dragAndDrop/styles.css";
 import { TaskCategory, TaskStatus } from "@/app/generated/prisma/enums";
-import { mapTasksToEvents, type CalendarTaskEvent } from "@/lib/schedule/calendarMapper";
+import { mapTasksToEventsWithRecurrence, type CalendarTaskEvent } from "@/lib/schedule/calendarMapper";
 import { TASK_CATEGORY_TINTS, isTaskOverdue } from "@/lib/schedule/constants";
 import { EMPTY_SCHEDULE_FILTERS, filterTasks, type ScheduleFilters } from "@/lib/schedule/filters";
 import type { ScheduleUser, TaskWithRelations } from "@/lib/schedule/types";
@@ -131,7 +131,17 @@ export function CalendarView({
     [tasks, overrides],
   );
   const visibleTasks = useMemo(() => filterTasks(localTasks, filters), [localTasks, filters]);
-  const events = useMemo(() => mapTasksToEvents(visibleTasks), [visibleTasks]);
+  // Step 5B-1(반복 일정) — Month/Week 어느 View든 넉넉히 덮도록 현재 date 기준
+  // 앞뒤 45일을 계산 구간으로 쓴다. 이 프로젝트는 Month/Week 이동이 서버
+  // 재조회 없이 client 상태(date)만 바뀌는 구조라(page.tsx가 항상 전체 Task를
+  // 한 번에 내려줌), 이 구간 밖으로 이동하면 date가 바뀌며 구간 자체가 함께
+  // 다시 계산된다 — 반복 회차가 "그 시점엔 안 보이다가" 갑자기 사라지는 경계는
+  // 사실상 발생하지 않는다(한 화면에 필요한 범위보다 훨씬 넓다).
+  const recurrenceRange = useMemo(() => ({ start: addDays(date, -45), end: addDays(date, 45) }), [date]);
+  const events = useMemo(
+    () => mapTasksToEventsWithRecurrence(visibleTasks, recurrenceRange.start, recurrenceRange.end),
+    [visibleTasks, recurrenceRange],
+  );
 
   /**
    * Drag/Resize 공통 저장 경로. 화면은 즉시 이동된 것처럼 낙관적으로 갱신하고,
@@ -171,10 +181,14 @@ export function CalendarView({
   }
 
   function handleEventDrop({ event, start, end }: EventInteractionArgs<CalendarTaskEvent>) {
+    // Step 5B-1 — 반복 일정의 "계산된" 회차는 실제 Task Row가 없어 여기로 오면
+    // 안 된다. draggableAccessor가 이미 막지만, 방어적으로 한 번 더 확인한다.
+    if (event.isRecurringOccurrence) return;
     void commitDateChange(event.task, new Date(start), new Date(end));
   }
 
   function handleEventResize({ event, start, end }: EventInteractionArgs<CalendarTaskEvent>) {
+    if (event.isRecurringOccurrence) return;
     void commitDateChange(event.task, new Date(start), new Date(end));
   }
 
@@ -241,7 +255,8 @@ export function CalendarView({
             popup
             selectable
             resizable
-            resizableAccessor={(event: CalendarTaskEvent) => !NON_RESIZABLE_CATEGORIES.has(event.task.category)}
+            resizableAccessor={(event: CalendarTaskEvent) => !event.isRecurringOccurrence && !NON_RESIZABLE_CATEGORIES.has(event.task.category)}
+            draggableAccessor={(event: CalendarTaskEvent) => !event.isRecurringOccurrence}
             onEventDrop={handleEventDrop}
             onEventResize={handleEventResize}
             onSelectEvent={(event: CalendarTaskEvent) => onSelectTask(event.task)}

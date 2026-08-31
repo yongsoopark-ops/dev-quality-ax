@@ -8,6 +8,7 @@ import { PROJECT_CATEGORIES_CACHE_KEY } from "@/lib/schedule/constants";
 import { NotificationType, TaskCategory } from "@/app/generated/prisma/enums";
 import { Prisma } from "@/app/generated/prisma/client";
 import { resolveMentionedUserIds } from "@/lib/schedule/mention";
+import { MONTHLY_WEEK_ORDINAL_OPTIONS, WEEKDAY_ORDER } from "@/lib/schedule/recurrence";
 import type {
   ProjectCategoryOption,
   TaskCommentInfo,
@@ -53,6 +54,32 @@ function validate(input: TaskFormInput): string | null {
   if (input.category === TaskCategory.HALF_DAY && !input.halfDayPeriod) {
     return "오전/오후를 선택해 주세요.";
   }
+
+  // Step 5B-1(반복 일정) — recurrenceType이 NONE이면 검증할 것이 없다(기존과 동일).
+  if (input.recurrenceType === "WEEKLY") {
+    if (input.recurrenceWeekdays.length === 0) return "반복 요일을 선택해 주세요.";
+    if (!input.recurrenceWeekdays.every((w) => WEEKDAY_ORDER.includes(w))) {
+      return "반복 요일이 올바르지 않습니다.";
+    }
+  } else if (input.recurrenceType === "MONTHLY") {
+    if (input.recurrenceMonthlyRuleType === "DAY_OF_MONTH") {
+      const day = Number(input.recurrenceMonthDay);
+      if (!Number.isInteger(day) || day < 1 || day > 31) return "반복할 날짜(1~31)를 선택해 주세요.";
+    } else if (input.recurrenceMonthlyRuleType === "NTH_WEEKDAY") {
+      if (!WEEKDAY_ORDER.includes(input.recurrenceMonthlyWeekday)) return "반복 요일을 선택해 주세요.";
+      const ordinal = Number(input.recurrenceMonthlyWeekOrdinal);
+      if (!MONTHLY_WEEK_ORDINAL_OPTIONS.includes(ordinal)) return "몇째 주인지 선택해 주세요.";
+    } else {
+      return "매월 반복 방식을 선택해 주세요.";
+    }
+  }
+  if (input.recurrenceType !== "NONE" && input.recurrenceEndDate) {
+    const anchorDate = input.category === TaskCategory.MEETING ? input.meetingDate : input.startDate;
+    if (anchorDate && new Date(input.recurrenceEndDate).getTime() < new Date(anchorDate).getTime()) {
+      return "반복 종료일은 시작일보다 빠를 수 없습니다.";
+    }
+  }
+
   return null;
 }
 
@@ -74,6 +101,67 @@ function buildBaseTaskData(input: TaskFormInput) {
     memo: input.memo.trim() || null,
     goalName: input.category === TaskCategory.PERSONAL_GOAL ? input.goalName.trim() || null : null,
     halfDayPeriod: input.category === TaskCategory.HALF_DAY ? input.halfDayPeriod || null : null,
+    ...buildRecurrenceData(input),
+  };
+}
+
+/**
+ * Step 5B-1(반복 일정) — recurrenceType에 따라 관련 없는 필드는 항상 명시적으로
+ * null/빈 배열로 비운다(goalName/halfDayPeriod와 같은 패턴). V1 UI는
+ * recurrenceInterval을 항상 1로만 보내지만, 계산 로직(lib/schedule/recurrence.ts)은
+ * 이미 일반적인 간격을 지원하므로 여기서 그대로 저장한다.
+ */
+function buildRecurrenceData(input: TaskFormInput) {
+  if (input.recurrenceType === "NONE") {
+    return {
+      recurrenceType: "NONE" as const,
+      recurrenceInterval: 1,
+      recurrenceWeekdays: [],
+      recurrenceMonthlyRuleType: null,
+      recurrenceMonthDay: null,
+      recurrenceMonthlyWeekOrdinal: null,
+      recurrenceMonthlyWeekday: null,
+      recurrenceEndDate: null,
+    };
+  }
+
+  const shared = {
+    recurrenceInterval: 1,
+    recurrenceEndDate: input.recurrenceEndDate ? new Date(input.recurrenceEndDate) : null,
+  };
+
+  if (input.recurrenceType === "WEEKLY") {
+    return {
+      recurrenceType: "WEEKLY" as const,
+      ...shared,
+      recurrenceWeekdays: input.recurrenceWeekdays,
+      recurrenceMonthlyRuleType: null,
+      recurrenceMonthDay: null,
+      recurrenceMonthlyWeekOrdinal: null,
+      recurrenceMonthlyWeekday: null,
+    };
+  }
+
+  // MONTHLY
+  if (input.recurrenceMonthlyRuleType === "NTH_WEEKDAY") {
+    return {
+      recurrenceType: "MONTHLY" as const,
+      ...shared,
+      recurrenceWeekdays: [],
+      recurrenceMonthlyRuleType: "NTH_WEEKDAY" as const,
+      recurrenceMonthDay: null,
+      recurrenceMonthlyWeekOrdinal: Number(input.recurrenceMonthlyWeekOrdinal),
+      recurrenceMonthlyWeekday: input.recurrenceMonthlyWeekday,
+    };
+  }
+  return {
+    recurrenceType: "MONTHLY" as const,
+    ...shared,
+    recurrenceWeekdays: [],
+    recurrenceMonthlyRuleType: "DAY_OF_MONTH" as const,
+    recurrenceMonthDay: Number(input.recurrenceMonthDay),
+    recurrenceMonthlyWeekOrdinal: null,
+    recurrenceMonthlyWeekday: null,
   };
 }
 
