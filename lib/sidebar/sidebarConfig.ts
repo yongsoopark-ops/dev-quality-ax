@@ -4,6 +4,7 @@ export type SidebarMenuId =
   | "HOME"
   | "CHAT"
   | "SCHEDULE"
+  | "MEETING_TEMPLATES"
   | "USER_MANAGEMENT"
   | "KPI_MANAGEMENT"
   | "DATA_SOURCES"
@@ -69,6 +70,20 @@ export const SIDEBAR_MENUS: SidebarMenuDef[] = [
     fixed: false,
     defaultGroupId: "PROJECT_MANAGEMENT",
     defaultOrder: 0,
+  },
+  {
+    // Step 5B-3 — 회의록 Template Editor는 ADMIN만 관리한다(요청사항: MEMBER는
+    // Template 편집 UI 접근 불가). "프로젝트 관리" 그룹에 배치하되(요청사항:
+    // "프로젝트 관리 영역에서 관리") requiredRole로 MEMBER에게는 이 메뉴 자체가
+    // 보이지 않는다 — Sidebar가 이미 role별로 그룹 안 항목을 필터링하는 기존
+    // 구조를 그대로 재사용한다(getRenderableSidebar).
+    id: "MEETING_TEMPLATES",
+    label: "회의록 Template",
+    href: "/meeting-templates",
+    requiredRole: "ADMIN",
+    fixed: false,
+    defaultGroupId: "PROJECT_MANAGEMENT",
+    defaultOrder: 1,
   },
   {
     id: "USER_MANAGEMENT",

@@ -180,9 +180,15 @@ export async function createMeetingTemplateAction(input: {
   }
 }
 
+/** Step 5B-3(Editor) — 이름뿐 아니라 회의 유형도 수정할 수 있다(요청사항:
+ * "이름/회의 유형 수정 시 기존 unique 제약 안전 처리"). meetingType을
+ * 바꿔도 isActive는 그대로 유지된다 — 활성 전환은 항상
+ * setActiveMeetingTemplateAction을 통해서만 일어난다(요청사항: 별도 저장
+ * 구조를 만들지 않음). @@unique([meetingType, name]) 위반은 catch에서
+ * 일반 사용자용 문구로만 알린다. */
 export async function updateMeetingTemplateAction(
   id: string,
-  input: { name: string; templateSchema: unknown },
+  input: { name: string; meetingType: MeetingTemplateType; templateSchema: unknown },
 ): Promise<{ template?: MeetingTemplateInfo; error?: string }> {
   const session = await requireUser();
   const permissionError = requireAdmin(session);
@@ -197,12 +203,37 @@ export async function updateMeetingTemplateAction(
   try {
     const row = await prisma.meetingTemplate.update({
       where: { id },
-      data: { name, templateSchema: JSON.stringify(validated), updatedBy: session.user.id },
+      data: {
+        name,
+        meetingType: input.meetingType,
+        templateSchema: JSON.stringify(validated),
+        updatedBy: session.user.id,
+      },
       include: { updater: { select: { name: true } } },
     });
     const info = toInfo(row);
     return info ? { template: info } : { error: "Template을 수정했지만 불러오지 못했습니다." };
   } catch {
-    return { error: "Template을 수정하지 못했습니다. 잠시 후 다시 시도해 주세요." };
+    return { error: "Template을 수정하지 못했습니다. 같은 회의 유형에 같은 이름의 Template이 이미 있는지 확인해 주세요." };
+  }
+}
+
+/**
+ * Step 5B-3(Editor) — 개별 회의록을 저장하지 않는 정책상 MeetingTemplate을
+ * 참조하는 다른 테이블이 없어(FK로 이 테이블을 가리키는 쪽이 없음) 삭제가
+ * 항상 안전하다. 활성(isActive=true) Template을 삭제하면 그 meetingType은
+ * 활성 Template이 없는 상태가 된다 — 별도 자동 승계는 하지 않는다(요청사항
+ * 범위 밖, Client가 삭제 전 확인창으로 안내).
+ */
+export async function deleteMeetingTemplateAction(id: string): Promise<{ ok?: true; error?: string }> {
+  const session = await requireUser();
+  const permissionError = requireAdmin(session);
+  if (permissionError) return { error: permissionError };
+
+  try {
+    await prisma.meetingTemplate.delete({ where: { id } });
+    return { ok: true };
+  } catch {
+    return { error: "Template을 삭제하지 못했습니다. 잠시 후 다시 시도해 주세요." };
   }
 }
