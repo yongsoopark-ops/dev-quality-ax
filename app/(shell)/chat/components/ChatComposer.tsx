@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import type { ChatAttachmentPolicy } from "@/lib/chat/attachments";
 
 export interface ChatComposerAttachment {
@@ -43,6 +43,11 @@ export function ChatComposer({
   attachment?: ChatComposerAttachment;
 }) {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // Step 3(Drag & Drop) — dragenter/dragleave는 자식 요소를 넘나들 때마다도
+  // 반복 발생해 진입/이탈 카운트를 세지 않으면 중간에 깜빡인다. 카운터로
+  // "지금 실제로 Composer 위에 있는지"만 판단한다.
+  const dragCounterRef = useRef(0);
+  const [isDraggingOver, setIsDraggingOver] = useState(false);
 
   function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -52,8 +57,48 @@ export function ChatComposer({
     if (file) attachment?.onSelect(file);
   }
 
+  // 첨부 미지원 Skill(W3/W4 등)에서도 dragOver/drop 기본 동작(브라우저가 파일을
+  // 열어버리는 것)만은 항상 막는다 — 실제로 파일을 받는 것은 attachment가
+  // 있을 때뿐이다.
+  function handleDragEnter(e: React.DragEvent<HTMLDivElement>) {
+    e.preventDefault();
+    if (!attachment) return;
+    dragCounterRef.current += 1;
+    setIsDraggingOver(true);
+  }
+
+  function handleDragOver(e: React.DragEvent<HTMLDivElement>) {
+    e.preventDefault();
+  }
+
+  function handleDragLeave(e: React.DragEvent<HTMLDivElement>) {
+    e.preventDefault();
+    if (!attachment) return;
+    dragCounterRef.current = Math.max(0, dragCounterRef.current - 1);
+    if (dragCounterRef.current === 0) setIsDraggingOver(false);
+  }
+
+  function handleDrop(e: React.DragEvent<HTMLDivElement>) {
+    e.preventDefault();
+    dragCounterRef.current = 0;
+    setIsDraggingOver(false);
+    if (!attachment) return;
+    // 이미 첨부가 있어도 새로 Drop한 파일로 교체한다(요청사항) — onSelect가
+    // 검증 후 그대로 덮어쓴다(버튼으로 다시 고르는 것과 동일 경로).
+    const file = e.dataTransfer.files?.[0];
+    if (file) attachment.onSelect(file);
+  }
+
   return (
-    <div className="rounded-2xl border border-navy-100 bg-white p-2.5 shadow-sm">
+    <div
+      onDragEnter={handleDragEnter}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+      className={`rounded-2xl border p-2.5 shadow-sm transition-colors ${
+        isDraggingOver ? "border-navy-400 bg-navy-50" : "border-navy-100 bg-white"
+      }`}
+    >
       {attachment?.file && (
         <div className="mb-2 flex items-center gap-2 rounded-lg bg-navy-50 px-2.5 py-1.5 text-xs text-navy-950/80">
           <span aria-hidden>📎</span>

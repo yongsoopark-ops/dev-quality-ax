@@ -4,11 +4,13 @@ import { useState } from "react";
 import { executeW3AutomationAction, executeW4AutomationAction, runChatCommandAction, runSelectedTaskCommandAction } from "./actions";
 import type { ChatCommandResult } from "@/lib/chat/types";
 import { CHAT_TASKS, DEFAULT_CHAT_TASK_ID } from "@/lib/chat/tasks";
-import { validateAttachment } from "@/lib/chat/attachments";
+import { validateAttachment, readTextFile } from "@/lib/chat/attachments";
+import { type MeetingType } from "@/lib/chat/meetingTypes";
 import { UserMessage } from "./components/UserMessage";
 import { AssistantTextMessage } from "./components/AssistantTextMessage";
 import { ChatComposer, type ChatComposerAttachment } from "./components/ChatComposer";
 import { ChatTaskSidebar } from "./components/ChatTaskSidebar";
+import { MeetingTypeSelector } from "./components/MeetingTypeSelector";
 import { PreflightCard, ExecutionCard, W4PreflightCard, W4ExecutionCard } from "./ResultCards";
 
 interface UserMessageData {
@@ -27,7 +29,15 @@ interface AssistantMessageData {
   result: ChatCommandResult;
 }
 
-type ChatMessage = UserMessageData | AssistantMessageData;
+/** Step 3 — 회의 유형 선택 UI. 어떤 유형을 골랐는지(selected)를 메시지 자체에
+ * 들고 있어서, 한 번 답한 뒤에도 그 상태 그대로 대화 이력에 남는다. */
+interface MeetingTypeSelectMessageData {
+  id: string;
+  role: "MEETING_TYPE_SELECT";
+  selected: MeetingType | null;
+}
+
+type ChatMessage = UserMessageData | AssistantMessageData | MeetingTypeSelectMessageData;
 
 let messageIdCounter = 0;
 function nextMessageId(): string {
@@ -81,11 +91,30 @@ export function ChatClient() {
   // 이 state를 그대로 이어받아 쓰면 된다. 새로고침하면 사라지는 건 V1에서는
   // 문제없다(서버/DB에 저장하지 않음).
   const [submittedMeetingFile, setSubmittedMeetingFile] = useState<File | null>(null);
+  // Step 3 — 읽은 TXT 원문과 사용자가 고른 회의 유형. 둘 다 다음 Gemini
+  // Step이 그대로 이어받을 값이라 여기서만 transient state로 유지한다
+  // (서버/DB 저장 없음, 새로고침하면 사라짐 — 지시사항대로 V1에서는 문제없음).
+  const [meetingTranscript, setMeetingTranscript] = useState<string | null>(null);
+  const [selectedMeetingType, setSelectedMeetingType] = useState<MeetingType | null>(null);
 
   const selectedTask = CHAT_TASKS.find((t) => t.id === selectedTaskId);
 
   function appendAssistantMessage(result: ChatCommandResult) {
     setMessages((prev) => [...prev, { id: nextMessageId(), role: "ASSISTANT", result }]);
+  }
+
+  function appendMeetingTypeSelector() {
+    setMessages((prev) => [...prev, { id: nextMessageId(), role: "MEETING_TYPE_SELECT", selected: null }]);
+  }
+
+  /** 회의 유형 버튼 클릭 — 그 메시지 자체에 선택 결과를 남겨(다른 메시지를
+   * 지우지 않고) 이력에 그대로 보이게 하고, 다음 Gemini Step이 쓸 state도
+   * 함께 채운다. */
+  function handleSelectMeetingType(messageId: string, type: MeetingType) {
+    setMessages((prev) =>
+      prev.map((m) => (m.id === messageId && m.role === "MEETING_TYPE_SELECT" ? { ...m, selected: type } : m)),
+    );
+    setSelectedMeetingType(type);
   }
 
   function handleSelectTask(taskId: string) {
@@ -97,6 +126,8 @@ export function ChatClient() {
     setAttachedFile(null);
     setAttachmentError(null);
     setSubmittedMeetingFile(null);
+    setMeetingTranscript(null);
+    setSelectedMeetingType(null);
     const task = CHAT_TASKS.find((t) => t.id === taskId);
     if (task?.instructionMessage) {
       appendAssistantMessage({ kind: "TEXT", message: task.instructionMessage });
@@ -182,16 +213,31 @@ export function ChatClient() {
     }
     setIsSending(true);
 
-    // 회의록 Skill은 아직 서버 파서/자동화 경로를 타지 않는다 — 파일 접수
-    // 확인까지만 이 Step의 범위다(요청사항: AI 생성/서버 전송 없음). 내용은
-    // 아직 읽지 않았으므로 "확인했습니다"가 아니라 "첨부되었습니다"로 표현한다.
+    // 회의록 Skill은 아직 서버 파서/자동화 경로를 타지 않는다 — Gemini
+    // 호출/회의록 생성은 이 Step의 범위 밖이다(요청사항). 내용은 접수
+    // 시점에는 아직 읽지 않았으므로 "확인했습니다"가 아니라 "첨부되었습니다"로
+    // 표현하고, 실제 읽기는 그 다음에 한다.
     if (selectedTaskId === "meeting-notes") {
-      appendAssistantMessage({
-        kind: "TEXT",
-        message: submittedFile
-          ? "파일이 첨부되었습니다. 다음 단계에서 회의 유형을 선택해 주세요."
-          : "회의 원문 TXT 파일을 업로드해 주세요.",
-      });
+      if (!submittedFile) {
+        appendAssistantMessage({ kind: "TEXT", message: "회의 원문 TXT 파일을 업로드해 주세요." });
+        setIsSending(false);
+        return;
+      }
+
+      appendAssistantMessage({ kind: "TEXT", message: "파일이 첨부되었습니다. 다음 단계에서 회의 유형을 선택해 주세요." });
+
+      // Step 3 — 표준 File API로 TXT 원문을 읽는다(서버 전송 없음). 화자
+      // 라벨 유무 등 형식은 가정하지 않고, "내용이 실제로 있는가"만 본다.
+      const readResult = await readTextFile(submittedFile);
+      if (!readResult.ok) {
+        appendAssistantMessage({ kind: "TEXT", message: readResult.error });
+        setIsSending(false);
+        return;
+      }
+
+      setMeetingTranscript(readResult.text);
+      appendAssistantMessage({ kind: "TEXT", message: "회의 유형을 선택해 주세요." });
+      appendMeetingTypeSelector();
       setIsSending(false);
       return;
     }
@@ -222,7 +268,14 @@ export function ChatClient() {
   }
 
   return (
-    <div className="flex h-dvh min-w-0 flex-1 flex-col overflow-hidden sm:flex-row">
+    <div
+      className="flex h-dvh min-w-0 flex-1 flex-col overflow-hidden sm:flex-row"
+      // Composer 밖에서 실수로 파일을 놓쳐도 브라우저가 그 파일을 열어버리며
+      // 전체 페이지를 이탈하지 않게 막는다(요청사항) — 실제로 파일을 받는
+      // 곳은 ChatComposer뿐이다.
+      onDragOver={(e) => e.preventDefault()}
+      onDrop={(e) => e.preventDefault()}
+    >
       <ChatTaskSidebar selectedTaskId={selectedTaskId} onSelect={handleSelectTask} />
 
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
@@ -240,13 +293,19 @@ export function ChatClient() {
                 <p className="text-sm text-navy-950/40">무엇을 도와드릴까요?</p>
               </div>
             ) : (
-              messages.map((m) =>
-                m.role === "USER" ? (
-                  <UserMessage key={m.id} text={m.text} attachmentName={m.attachmentName} />
-                ) : (
-                  <AssistantMessage key={m.id} result={m.result} />
-                ),
-              )
+              messages.map((m) => {
+                if (m.role === "USER") return <UserMessage key={m.id} text={m.text} attachmentName={m.attachmentName} />;
+                if (m.role === "MEETING_TYPE_SELECT") {
+                  return (
+                    <MeetingTypeSelector
+                      key={m.id}
+                      selected={m.selected}
+                      onSelect={(type) => handleSelectMeetingType(m.id, type)}
+                    />
+                  );
+                }
+                return <AssistantMessage key={m.id} result={m.result} />;
+              })
             )}
             {isSending && <AssistantTextMessage message="분석 중..." />}
           </div>

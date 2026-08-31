@@ -30,3 +30,23 @@ export function validateAttachment(file: File, policy: ChatAttachmentPolicy): At
   }
   return { ok: true };
 }
+
+export type ReadTextFileResult = { ok: true; text: string } | { ok: false; error: string };
+
+/**
+ * Step 3 — 표준 File API(`file.text()`)로 TXT 원문을 읽는다. 서버로 보내지
+ * 않고 브라우저에서만 읽는다. 화자 라벨("박용수:" 등) 유무나 형식은 전혀
+ * 가정하지 않는다 — 여기서는 "내용이 실제로 있는가"만 판단한다.
+ */
+export async function readTextFile(file: File): Promise<ReadTextFileResult> {
+  let text: string;
+  try {
+    text = await file.text();
+  } catch {
+    return { ok: false, error: "파일을 읽는 중 문제가 발생했습니다. 다시 시도해 주세요." };
+  }
+  if (!text.trim()) {
+    return { ok: false, error: "파일 내용이 비어 있습니다. 다른 TXT 파일로 다시 시도해 주세요." };
+  }
+  return { ok: true, text };
+}
