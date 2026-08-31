@@ -311,74 +311,80 @@ export default function Sidebar({
           </SmartLink>
         ))}
 
+        {/* Hotfix — "메뉴 구성" 라벨/편집 버튼/편집 모드 컨트롤(기본구성·취소·저장)은
+            ADMIN 전용으로 유지한다. 예전에는 이 isAdmin 블록 안에 아래 그룹 메뉴
+            목록(visibleGroups.map)까지 함께 들어 있어, MEMBER는 서버가 SCHEDULE을
+            정상 내려줘도(getRenderableSidebar) 화면에서 그룹 메뉴 전체가 사라지는
+            버그가 있었다 — 그룹 메뉴 렌더링은 아래에서 role과 무관하게 항상
+            렌더한다(요청사항). */}
         {isAdmin && (
-          <>
-            <div className="flex items-center justify-between px-2 pt-2">
-              <span className="text-[11px] font-medium uppercase tracking-wide text-white/30">메뉴 구성</span>
-              {!editMode && (
-                <button
-                  type="button"
-                  onClick={startEdit}
-                  className="text-[11px] font-medium text-white/50 hover:text-white/80"
-                >
-                  편집
-                </button>
-              )}
-            </div>
-
-            {editMode && (
-              <div className="flex flex-wrap items-center gap-2 px-2 pb-1">
-                <button
-                  type="button"
-                  onClick={applyDefaultLayout}
-                  disabled={saving}
-                  className="rounded border border-white/15 px-2 py-1 text-[11px] text-white/70 hover:bg-white/5 disabled:opacity-50"
-                >
-                  기본 구성
-                </button>
-                <button
-                  type="button"
-                  onClick={cancelEdit}
-                  disabled={saving}
-                  className="rounded border border-white/15 px-2 py-1 text-[11px] text-white/70 hover:bg-white/5 disabled:opacity-50"
-                >
-                  취소
-                </button>
-                <button
-                  type="button"
-                  onClick={handleSave}
-                  disabled={saving}
-                  className="rounded bg-navy-700 px-2 py-1 text-[11px] font-medium text-white hover:bg-navy-800 disabled:opacity-50"
-                >
-                  {saving ? "저장 중..." : "저장"}
-                </button>
-                {saveError && <p className="w-full text-[11px] text-rose-300">{saveError}</p>}
-              </div>
-            )}
-
-            <DndContext sensors={sensors} onDragEnd={handleDragEnd}>
-              <SortableContext
-                items={visibleGroups.map((g) => g.groupId)}
-                strategy={verticalListSortingStrategy}
+          <div className="flex items-center justify-between px-2 pt-2">
+            <span className="text-[11px] font-medium uppercase tracking-wide text-white/30">메뉴 구성</span>
+            {!editMode && (
+              <button
+                type="button"
+                onClick={startEdit}
+                className="text-[11px] font-medium text-white/50 hover:text-white/80"
               >
-                <div className="space-y-1">
-                  {visibleGroups.map((group) => (
-                    <SortableGroupSection
-                      key={group.groupId}
-                      group={group}
-                      editMode={editMode}
-                      expanded={isGroupExpanded(group)}
-                      onToggle={() =>
-                        setManualExpand((prev) => ({ ...prev, [group.groupId]: !isGroupExpanded(group) }))
-                      }
-                      pathname={pathname}
-                    />
-                  ))}
-                </div>
-              </SortableContext>
-            </DndContext>
-          </>
+                편집
+              </button>
+            )}
+          </div>
         )}
+
+        {isAdmin && editMode && (
+          <div className="flex flex-wrap items-center gap-2 px-2 pb-1">
+            <button
+              type="button"
+              onClick={applyDefaultLayout}
+              disabled={saving}
+              className="rounded border border-white/15 px-2 py-1 text-[11px] text-white/70 hover:bg-white/5 disabled:opacity-50"
+            >
+              기본 구성
+            </button>
+            <button
+              type="button"
+              onClick={cancelEdit}
+              disabled={saving}
+              className="rounded border border-white/15 px-2 py-1 text-[11px] text-white/70 hover:bg-white/5 disabled:opacity-50"
+            >
+              취소
+            </button>
+            <button
+              type="button"
+              onClick={handleSave}
+              disabled={saving}
+              className="rounded bg-navy-700 px-2 py-1 text-[11px] font-medium text-white hover:bg-navy-800 disabled:opacity-50"
+            >
+              {saving ? "저장 중..." : "저장"}
+            </button>
+            {saveError && <p className="w-full text-[11px] text-rose-300">{saveError}</p>}
+          </div>
+        )}
+
+        {/* 그룹 메뉴 목록 자체는 role과 무관하게 모든 로그인 사용자에게 렌더한다 —
+            어떤 메뉴가 이 안에 들어있는지는 이미 서버(getRenderableSidebar)가
+            role별로 필터링해서 내려준 결과이므로, 여기서 다시 role을 검사할
+            필요가 없다(ADMIN 전용 메뉴가 MEMBER의 visibleGroups에는 애초에
+            존재하지 않는다). editMode는 MEMBER의 경우 "편집" 버튼 자체가
+            없어 항상 false이므로, DnD/편집 UI는 실질적으로 계속 ADMIN 전용으로
+            남는다 — 여기서 별도로 role을 다시 체크하지 않는다. */}
+        <DndContext sensors={sensors} onDragEnd={handleDragEnd}>
+          <SortableContext items={visibleGroups.map((g) => g.groupId)} strategy={verticalListSortingStrategy}>
+            <div className="space-y-1">
+              {visibleGroups.map((group) => (
+                <SortableGroupSection
+                  key={group.groupId}
+                  group={group}
+                  editMode={editMode}
+                  expanded={isGroupExpanded(group)}
+                  onToggle={() => setManualExpand((prev) => ({ ...prev, [group.groupId]: !isGroupExpanded(group) }))}
+                  pathname={pathname}
+                />
+              ))}
+            </div>
+          </SortableContext>
+        </DndContext>
       </nav>
 
       <div className="border-t border-white/10 px-5 py-4">
