@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { usePrefetchOnIntent } from "@/hooks/usePrefetchOnIntent";
 import { TaskCategory, TaskStatus } from "@/app/generated/prisma/enums";
@@ -143,6 +143,19 @@ const labelClass = "text-xs font-medium text-navy-950/60";
 
 function canModify(currentUser: ScheduleCurrentUser, authorId: string): boolean {
   return currentUser.id === authorId || currentUser.role === "ADMIN";
+}
+
+/** Outside-click 닫힘 버그 보완 — 업무명 등 input/textarea 텍스트를 마우스로
+ * 드래그 선택하다 포인터가 팝업(Backdrop) 밖으로 나가면, mousedown은
+ * input에서 시작했지만 mouseup은 Backdrop 위에서 끝나 브라우저가 그 둘의
+ * 최소 공통 조상인 Backdrop에 click을 발생시킨다 — 아래 Backdrop의
+ * `e.target === e.currentTarget` 검사만으로는 이걸 "바깥 클릭"과 구분하지
+ * 못해 팝업이 닫혔다. 이 함수로 "그 클릭의 mousedown이 텍스트 편집 영역
+ * 안에서 시작됐는지"만 판별해 그런 경우에만 닫기를 무시한다 — 특정 필드를
+ * 하드코딩하지 않고 input/textarea/contenteditable 전부에 공통 적용된다. */
+function isTextEditableTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  return target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable;
 }
 
 /**
@@ -662,6 +675,10 @@ export function TaskDetailPanel({
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Outside-click 닫힘 버그 보완 — isTextEditableTarget 주석 참고. state가
+  // 아니라 ref인 이유: 이 값은 렌더에 영향을 주지 않고 같은 mousedown→click
+  // 사이클 안에서만 읽히면 되므로 리렌더를 유발할 필요가 없다.
+  const dragStartedInEditableRef = useRef(false);
 
   // 성능 개선: page.tsx는 더 이상 scheduleRevisions/조건부 상세(memo/halfDayPeriod/
   // meetingDetail/projectDetail.categoryId)/최초 일정을 eager load하지 않는다 —
@@ -861,12 +878,23 @@ export function TaskDetailPanel({
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+      onMouseDown={(e) => {
+        // 업무명 등 텍스트를 드래그로 선택하다 포인터가 Backdrop까지 나가면
+        // mouseup이 Backdrop 위에서 끝나 아래 onClick이 "바깥 클릭"으로
+        // 오인한다 — 이 클릭 사이클의 mousedown이 텍스트 편집 영역에서
+        // 시작됐는지만 여기서 기록해 둔다(isTextEditableTarget 주석 참고).
+        dragStartedInEditableRef.current = isTextEditableTarget(e.target);
+      }}
       onClick={(e) => {
         // onMouseDown으로 즉시 닫으면, 같은 클릭의 mouseup/click이 이미 사라진
         // Backdrop을 그대로 통과해 뒤에 있던 Calendar 날짜/일정에 그대로 꽂혀
         // "닫히자마자 새 Modal이 다시 열리는" 통과 클릭 버그가 생긴다. onClick은
         // mousedown~mouseup 내내 이 Backdrop이 실제 클릭 대상으로 남아 있을 때만
         // 발생해 그 통과를 원천 차단한다 — 입력값은 저장하지 않고 닫기만 한다.
+        if (dragStartedInEditableRef.current) {
+          dragStartedInEditableRef.current = false;
+          return;
+        }
         if (e.target === e.currentTarget) onClose();
       }}
     >
