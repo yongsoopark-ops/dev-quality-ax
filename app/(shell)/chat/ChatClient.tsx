@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { executeW3AutomationAction, executeW4AutomationAction, runChatCommandAction, runSelectedTaskCommandAction } from "./actions";
 import type { ChatCommandResult } from "@/lib/chat/types";
 import { CHAT_TASKS, DEFAULT_CHAT_TASK_ID } from "@/lib/chat/tasks";
@@ -96,6 +96,12 @@ export function ChatClient() {
   // (서버/DB 저장 없음, 새로고침하면 사라짐 — 지시사항대로 V1에서는 문제없음).
   const [meetingTranscript, setMeetingTranscript] = useState<string | null>(null);
   const [selectedMeetingType, setSelectedMeetingType] = useState<MeetingType | null>(null);
+  // Step 3.1 — Composer 내부 Drop(ChatComposer.tsx)과는 별개로, Conversation
+  // 영역을 포함한 전체 작업영역(Sidebar 제외)에서도 같은 방식(진입/이탈
+  // 카운터로 중첩 이벤트 상쇄)을 독립적으로 적용해 깜빡임 없이 Drop 가능
+  // 상태를 보여준다. 실제 첨부는 항상 기존 attachment.onSelect만 거친다.
+  const workspaceDragCounterRef = useRef(0);
+  const [isDraggingOverWorkspace, setIsDraggingOverWorkspace] = useState(false);
 
   const selectedTask = CHAT_TASKS.find((t) => t.id === selectedTaskId);
 
@@ -128,6 +134,8 @@ export function ChatClient() {
     setSubmittedMeetingFile(null);
     setMeetingTranscript(null);
     setSelectedMeetingType(null);
+    workspaceDragCounterRef.current = 0;
+    setIsDraggingOverWorkspace(false);
     const task = CHAT_TASKS.find((t) => t.id === taskId);
     if (task?.instructionMessage) {
       appendAssistantMessage({ kind: "TEXT", message: task.instructionMessage });
@@ -163,6 +171,40 @@ export function ChatClient() {
         onRemove: handleRemoveAttachment,
       }
     : undefined;
+
+  // Step 3.1 — Chat 작업영역(헤더+Conversation+Composer, Sidebar 제외) 전체를
+  // Drop Zone으로 확장한다. attachment가 없는 Skill(W3/W4)에서는 preventDefault
+  // (브라우저 기본 파일-열기 방지)만 하고 실제 첨부 로직은 타지 않는다 —
+  // ChatComposer.tsx의 동일 패턴을 그대로 재사용한다.
+  function handleWorkspaceDragEnter(e: React.DragEvent<HTMLDivElement>) {
+    e.preventDefault();
+    if (!attachment) return;
+    workspaceDragCounterRef.current += 1;
+    setIsDraggingOverWorkspace(true);
+  }
+
+  function handleWorkspaceDragOver(e: React.DragEvent<HTMLDivElement>) {
+    e.preventDefault();
+  }
+
+  function handleWorkspaceDragLeave(e: React.DragEvent<HTMLDivElement>) {
+    e.preventDefault();
+    if (!attachment) return;
+    workspaceDragCounterRef.current = Math.max(0, workspaceDragCounterRef.current - 1);
+    if (workspaceDragCounterRef.current === 0) setIsDraggingOverWorkspace(false);
+  }
+
+  function handleWorkspaceDrop(e: React.DragEvent<HTMLDivElement>) {
+    e.preventDefault();
+    workspaceDragCounterRef.current = 0;
+    setIsDraggingOverWorkspace(false);
+    if (!attachment) return;
+    // Composer 위에 직접 Drop한 경우는 ChatComposer.tsx의 handleDrop이 먼저
+    // 처리하고 stopPropagation으로 여기까지 올라오지 않는다 — 이 핸들러는
+    // Composer 밖(헤더/Conversation 영역)에 놓인 경우만 담당한다.
+    const file = e.dataTransfer.files?.[0];
+    if (file) attachment.onSelect(file);
+  }
 
   /**
    * W3/W4 Preflight가 READY(+W4는 이미 최신 상태가 아닐 때)면 확인 버튼 없이
@@ -270,15 +312,24 @@ export function ChatClient() {
   return (
     <div
       className="flex h-dvh min-w-0 flex-1 flex-col overflow-hidden sm:flex-row"
-      // Composer 밖에서 실수로 파일을 놓쳐도 브라우저가 그 파일을 열어버리며
-      // 전체 페이지를 이탈하지 않게 막는다(요청사항) — 실제로 파일을 받는
-      // 곳은 ChatComposer뿐이다.
+      // Step 3.1 — 실제 Drop Zone(첨부 처리)은 아래 작업영역 wrapper와
+      // ChatComposer뿐이다. 이 최상위 레벨은 Sidebar 등 그 바깥에 실수로
+      // 파일을 놓쳐도 브라우저가 파일을 열어버리며 페이지를 이탈하지 않게
+      // 막는 마지막 안전망일 뿐, 첨부는 절대 여기서 처리하지 않는다.
       onDragOver={(e) => e.preventDefault()}
       onDrop={(e) => e.preventDefault()}
     >
       <ChatTaskSidebar selectedTaskId={selectedTaskId} onSelect={handleSelectTask} />
 
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+      <div
+        className={`flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden transition-colors ${
+          isDraggingOverWorkspace ? "bg-navy-50/60 ring-2 ring-inset ring-navy-300" : ""
+        }`}
+        onDragEnter={handleWorkspaceDragEnter}
+        onDragOver={handleWorkspaceDragOver}
+        onDragLeave={handleWorkspaceDragLeave}
+        onDrop={handleWorkspaceDrop}
+      >
         <div className="shrink-0 border-b border-navy-100 px-6 py-5 sm:px-8">
           <h1 className="text-lg font-semibold text-navy-950">Chat</h1>
           <p className="mt-1 max-w-[640px] text-sm text-navy-950/60">

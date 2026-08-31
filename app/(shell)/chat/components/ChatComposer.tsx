@@ -80,6 +80,10 @@ export function ChatComposer({
 
   function handleDrop(e: React.DragEvent<HTMLDivElement>) {
     e.preventDefault();
+    // Step 3.1 — Conversation 영역까지 Drop Zone이 확장되면서 이 컨테이너를
+    // 감싸는 상위(ChatClient)에도 동일한 drop 핸들러가 붙는다. 여기서 이미
+    // 처리했으므로 stopPropagation으로 중복 첨부 호출을 막는다.
+    e.stopPropagation();
     dragCounterRef.current = 0;
     setIsDraggingOver(false);
     if (!attachment) return;
