@@ -1,7 +1,7 @@
 "use server";
 
-import { addDays } from "date-fns";
 import { auth } from "@/auth";
+import { formatKstTime } from "@/lib/kst";
 import { prisma } from "@/lib/prisma";
 import { parseDocumentContentInput, validateDocumentContent } from "@/lib/meetingTemplates/richText";
 import { TASK_CATEGORY_KEY } from "@/lib/schedule/constants";
@@ -101,20 +101,28 @@ function formatDateOnly(d: Date): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
-/** timeSource(시:분만 쓴다)를 occurrenceDate(연/월/일만 쓴다) 위에 그대로
- * 얹는다 — lib/schedule/meetingStatus.ts의 combineDateWithTimeOfDay와 같은
- * 계산이지만, 이 파일은 "표시용 문자열"만 필요해 그 함수를 새로 export해
- * 의존을 늘리지 않고 아주 작은 동일 로직만 그대로 둔다. */
-function formatTimeOfDay(occurrenceDate: Date, timeSource: Date): string {
-  const combined = new Date(occurrenceDate);
-  combined.setHours(timeSource.getHours(), timeSource.getMinutes(), 0, 0);
-  return `${pad(combined.getHours())}:${pad(combined.getMinutes())}`;
+/** Hotfix Audit(Production KST/UTC 시간대 오차) — 회의 시작/종료 시각은
+ * "그 순간이 KST로 몇 시인가"가 진짜 값이다. timeSource.getHours() 같은
+ * 로컬 접근자는 서버 런타임이 KST가 아니면(Netlify Production은 UTC)
+ * 실제로 관찰된 9시간 오차의 원인이었다 — lib/kst.ts의 formatKstTime으로
+ * 교체해 서버 런타임 timezone과 무관하게 항상 KST 기준 시:분을 뽑는다.
+ * (예전엔 occurrenceDate 위에 시:분만 얹은 뒤 다시 시:분만 읽었는데,
+ * 그 "날짜 얹기"는 반환값에 아무 영향이 없어 occurrenceDate 인자를
+ * 그대로 없앴다.) */
+function formatTimeOfDay(timeSource: Date): string {
+  return formatKstTime(timeSource);
 }
 
 /** Step(파트 주간회의 Table UX + AUTO 필드 개편) — "회의 주차"는 실제 회의일이
  * 속한 월의 몇 번째 주인지를 뜻한다(요청사항 예시: 2026-09-07 → "9월
  * 2주차"). 월요일 시작 기준으로 그 달 1일이 속한 주를 1주차로 센다 — 임의
- * 값을 만들지 않고 실제 회의 occurrence 날짜에서만 계산한다. */
+ * 값을 만들지 않고 실제 회의 occurrence 날짜에서만 계산한다.
+ *
+ * date는 computeFirstOccurrenceOnOrAfter가 계산한 "달력 날짜"(UTC 자정
+ * anchored 입력을 그대로 유지하는 값)라 getFullYear()/getMonth()/getDate()
+ * 같은 로컬 접근자로 읽어도 서버 런타임 timezone과 무관하게 항상 같은
+ * 달력 날짜를 준다(아래 loadWeeklyScheduleIntoDraftAction의 입력 구성
+ * 주석 참고) — 여기서는 그대로 둔다. */
 function formatMeetingWeek(date: Date): string {
   const month = date.getMonth() + 1;
   const firstOfMonth = new Date(date.getFullYear(), date.getMonth(), 1);
@@ -150,8 +158,15 @@ export async function loadWeeklyScheduleIntoDraftAction(
   if (!validatedDoc) return { error: "현재 회의록 문서 내용이 올바르지 않습니다." };
 
   const effectiveRange = range ?? getWeeklyMeetingRange();
-  const rangeStart = new Date(`${effectiveRange.start}T00:00:00`);
-  const rangeEnd = new Date(`${effectiveRange.end}T23:59:59.999`);
+  // Hotfix Audit(Production KST/UTC 시간대 오차) — "T00:00:00"/"T23:59:59.999"처럼
+  // 시각을 붙이면서 "Z"(UTC 표시)를 빠뜨리면 그 순간부터 new Date()가 서버
+  // 런타임의 로컬 시간으로 파싱한다(날짜만 있는 문자열과 달리 타임존
+  // 독립적이지 않다) — Netlify Production(UTC)에서는 이 두 값 자체가
+  // 최대 9시간 밀려, 아래 Task 조회 필터(startDate/dueDate 비교)가 로컬
+  // 검증과 다른 Task 집합을 가져올 수 있었다. "Z"를 명시해 Task.startDate/
+  // dueDate와 같은 "UTC 자정 기준 달력 날짜" 표현으로 통일한다.
+  const rangeStart = new Date(`${effectiveRange.start}T00:00:00Z`);
+  const rangeEnd = new Date(`${effectiveRange.end}T23:59:59.999Z`);
 
   const tasks = await prisma.task.findMany({
     where: {
@@ -232,12 +247,22 @@ export async function loadWeeklyScheduleIntoDraftAction(
     const target = meetingCandidates[0];
     attendeeNames = extractAttendeeNames(target.meetingDetail?.attendees);
     const rule = taskRowToRecurrenceRule(target);
-    const nextOccurrence = computeFirstOccurrenceOnOrAfter(rule, addDays(rangeEnd, 1));
+    // Hotfix Audit — date-fns의 addDays(rangeEnd, 1)는 rangeEnd의 시:분:초를
+    // 그대로 보존한 채(23:59:59.999) 날짜만 옮긴다. computeFirstOccurrenceOnOrAfter
+    // 내부는 startOfDay() 등 "로컬 접근자" 기준으로 계산하는데, 그 입력이
+    // 자정에서 먼(23:59:59.999) 값이면 서버 런타임의 로컬 timezone에 따라
+    // "같은 순간이 어느 달력 날짜로 해석되는지"가 달라질 수 있다. rangeEnd + 1ms로
+    // "다음 날 UTC 자정"을 정확히 만들면(Task.startDate와 같은 달력 날짜
+    // 표현), UTC/KST 어느 런타임에서 읽어도 같은 날짜로 해석된다(KST는 UTC보다
+    // 항상 앞서 있어 "UTC 자정"은 KST 기준으로도 같은 날짜의 오전 9시일 뿐,
+    // 전날로 밀리지 않는다) — 이 두 런타임 조합에 한해 안전하다.
+    const dayAfterRangeEnd = new Date(rangeEnd.getTime() + 1);
+    const nextOccurrence = computeFirstOccurrenceOnOrAfter(rule, dayAfterRangeEnd);
     if (!nextOccurrence) {
       meetingNotFoundReason = "다음 회의 회차를 계산하지 못했습니다(반복 종료일이 지났을 수 있습니다).";
     } else if (target.meetingDetail?.time && target.meetingDetail.endTime) {
-      const startTime = formatTimeOfDay(nextOccurrence, target.meetingDetail.time);
-      const endTime = formatTimeOfDay(nextOccurrence, target.meetingDetail.endTime);
+      const startTime = formatTimeOfDay(target.meetingDetail.time);
+      const endTime = formatTimeOfDay(target.meetingDetail.endTime);
       meetingDateTime = `${formatDateOnly(nextOccurrence)} ${startTime} ~ ${endTime}`;
       meetingWeek = formatMeetingWeek(nextOccurrence);
       meetingLocation = target.meetingDetail.location ?? null;

@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { invalidateCache } from "@/lib/cache/memoCache";
+import { combineDateWithKstTimeOfDay, kstWallClockToInstant } from "@/lib/kst";
 import {
   DEFAULT_PROJECT_CATEGORY_GROUP_ID,
   PROJECT_CATEGORIES_CACHE_KEY,
@@ -254,10 +255,18 @@ function buildRecurrenceData(input: TaskFormInput) {
 
 /** meetingDate(날짜) + meetingStartTime(시간)을 기존 TaskMeetingDetail.time
  * DateTime 컬럼 하나로 결합한다 — Schema/저장 방식은 그대로 두고 입력 UI만
- * 두 필드로 나눈 것이라, 저장 직전에 다시 하나로 합치기만 하면 안전하다. */
+ * 두 필드로 나눈 것이라, 저장 직전에 다시 하나로 합치기만 하면 안전하다.
+ *
+ * Hotfix Audit(Production KST/UTC 시간대 오차) — 예전엔 `${date}T${time}`
+ * (Z 없음)을 new Date()로 바로 파싱했는데, 이 형태는 "서버 런타임의 로컬
+ * 시간"으로 해석된다 — 사용자는 항상 KST로 입력하므로, Netlify
+ * Production(UTC)에서 새로 만들거나 수정한 미팅은 실제로 9시간 밀린
+ * 시각이 저장될 수 있었다. kstWallClockToInstant(lib/kst.ts)로 "이
+ * 날짜/시간은 KST 기준"임을 명시해 서버 런타임과 무관하게 항상 같은
+ * 절대 시각을 저장한다. */
 function combineMeetingDateTime(input: TaskFormInput): Date | null {
   if (!input.meetingDate) return null;
-  return new Date(`${input.meetingDate}T${input.meetingStartTime || "00:00"}`);
+  return kstWallClockToInstant(input.meetingDate, input.meetingStartTime || "00:00");
 }
 
 /** Step 5B-7(시작/종료시간) — endTime도 같은 날짜(meetingDate) + meetingEndTime을
@@ -266,7 +275,7 @@ function combineMeetingDateTime(input: TaskFormInput): Date | null {
  * 비교로 검증하므로 여기서 다시 확인하지 않는다. */
 function combineMeetingEndDateTime(input: TaskFormInput): Date | null {
   if (!input.meetingDate || !input.meetingEndTime) return null;
-  return new Date(`${input.meetingDate}T${input.meetingEndTime}`);
+  return kstWallClockToInstant(input.meetingDate, input.meetingEndTime);
 }
 
 /**
@@ -457,16 +466,24 @@ export async function updateTaskDatesAction(
     }
 
     if (task.categoryOptionId === TaskCategory.MEETING && task.meetingDetail?.time) {
+      // Hotfix Audit(Production KST/UTC 시간대 오차) — 예전엔 getHours()/
+      // setHours()(서버 런타임의 로컬 접근자)로 시:분을 그대로 옮겼다. 로컬
+      // 개발 PC(KST)와 Netlify Production(UTC)에서 "같은 절대 시각"을 서로
+      // 다른 시:분으로 읽고 다시 그 값을 그대로 써버려 결과적으로 우연히
+      // 같은 절대 시각이 나오긴 했지만(둘 다 "런타임 로컬 시:분 보존"이라는
+      // 동일 기준을 썼으므로), 이는 두 런타임이 정확히 같은 로직을
+      // 실행한다는 우연에 의존한 것이라 다른 시간대 런타임에서는 깨질 수
+      // 있는 구조였다. combineDateWithKstTimeOfDay(lib/kst.ts)로 "회의
+      // 시각은 KST 기준"임을 명시해 어떤 런타임에서 실행되든 항상 같은
+      // 결과를 보장한다.
       const oldTime = task.meetingDetail.time;
-      const newTime = new Date(newStart);
-      newTime.setHours(oldTime.getHours(), oldTime.getMinutes(), 0, 0);
+      const newTime = combineDateWithKstTimeOfDay(newStart, oldTime);
       // Step 5B-7 — endTime도 같은 날짜로 함께 옮긴다. 시:분은 그대로 두고
       // 날짜만 바뀌므로 시작~종료 길이는 항상 보존된다.
       const data: { time: Date; endTime?: Date } = { time: newTime };
       if (task.meetingDetail.endTime) {
         const oldEndTime = task.meetingDetail.endTime;
-        const newEndTime = new Date(newStart);
-        newEndTime.setHours(oldEndTime.getHours(), oldEndTime.getMinutes(), 0, 0);
+        const newEndTime = combineDateWithKstTimeOfDay(newStart, oldEndTime);
         data.endTime = newEndTime;
       }
       await tx.taskMeetingDetail.update({ where: { taskId }, data });
