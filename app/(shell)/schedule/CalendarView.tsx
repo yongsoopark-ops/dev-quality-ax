@@ -7,39 +7,55 @@ import { addDays, format, getDay, isSameDay, parse, startOfWeek } from "date-fns
 import { ko } from "date-fns/locale";
 import "react-big-calendar/lib/css/react-big-calendar.css";
 import "react-big-calendar/lib/addons/dragAndDrop/styles.css";
-import { TaskCategory, TaskStatus } from "@/app/generated/prisma/enums";
 import { mapTasksToEventsWithRecurrence, type CalendarTaskEvent } from "@/lib/schedule/calendarMapper";
-import { TASK_CATEGORY_TINTS, isTaskOverdue } from "@/lib/schedule/constants";
+import {
+  TASK_CATEGORY_KEY as TaskCategory,
+  TASK_STATUS_KEY as TaskStatus,
+  isTaskOverdue,
+  tintFromColor,
+} from "@/lib/schedule/constants";
+import { suppressClicksAfterDragInteraction } from "@/lib/schedule/dragInteraction";
 import { EMPTY_SCHEDULE_FILTERS, filterTasks, type ScheduleFilters } from "@/lib/schedule/filters";
-import type { ScheduleUser, TaskWithRelations } from "@/lib/schedule/types";
+import { getHolidayName } from "@/lib/schedule/holidays";
+import { getEffectiveTaskStatus } from "@/lib/schedule/meetingStatus";
+import type { ProjectCategoryOption, ScheduleOptionInfo, ScheduleUser, TaskWithRelations } from "@/lib/schedule/types";
 import { updateTaskDatesAction } from "./actions";
 import { CalendarToolbar } from "./CalendarToolbar";
 import { CustomWeekView, WeekViewUsersContext } from "./CustomWeekView";
 import { ScheduleFilterBar } from "./ScheduleFilterBar";
 
 /**
- * Month 날짜 숫자 표시(요청사항 8) — 일요일은 약한 Red, 토요일은 약한 Blue,
- * 평일은 Navy/Gray, 오늘은 숫자에 작은 Navy Circle을 준다. isOffRange(다른 달
- * 날짜)/rbc-current 클래스 등 기존 처리는 RBC가 Wrapper에서 그대로 계속
- * 담당하므로 여기서는 label 자체의 색/오늘 표시만 신경 쓴다. drilldownView가
- * 없으면(현재 Day View 미등록) 기존 기본 DateHeader와 동일하게 클릭 불가능한
- * 순수 텍스트로 남긴다 — 동작 자체는 바꾸지 않는다.
+ * Month 날짜 숫자 표시(요청사항 8, Step(일정 관리 + 회의록 UI Polish)에서
+ * 요청사항 4로 개선) — 일요일은 약한 Red, 토요일은 약한 Blue, 평일은
+ * Navy/Gray. 오늘은 기존 "검정(navy-900) 동그라미로 숫자를 채우는" 표현을
+ * 약화하고(요청사항: "검정색 원 중심 표현은 제거 또는 약화") 대신 굵은
+ * accent 텍스트 + 아주 작은 "오늘" 배지로 바꿨다 — 한 눈에 "오늘"이라는
+ * 단어 자체가 보이는 편이 원 모양보다 더 명확하다는 요청 취지를 따른다.
+ * Step(Month/Week 오늘 배경 제거)에서 옅은 Column 배경(.rbc-day-bg.rbc-today)
+ * 자체는 제거했다 — 오늘 표시는 이 텍스트 강조 + "오늘" badge만으로 충분하다는
+ * 요청사항에 따른다. isOffRange(다른 달 날짜)/rbc-current 클래스 등 기존 처리는
+ * RBC가 Wrapper에서 그대로
+ * 계속 담당하므로 여기서는 label 자체의 색/오늘 표시만 신경 쓴다.
+ * drilldownView가 없으면(현재 Day View 미등록) 기존 기본 DateHeader와
+ * 동일하게 클릭 불가능한 순수 텍스트로 남긴다 — 동작 자체는 바꾸지 않는다.
  */
 function MonthDateHeader({ date, label, drilldownView, onDrillDown }: DateHeaderProps) {
   const day = date.getDay();
   const today = isSameDay(date, new Date());
   const weekdayColor = day === 0 ? "text-red-400" : day === 6 ? "text-blue-400" : "text-navy-950/60";
+  const holidayName = getHolidayName(date);
 
   const content = today ? (
-    <span className="flex h-5 w-5 items-center justify-center rounded-full bg-navy-900 text-[11px] font-semibold text-white">
-      {label}
+    <span className="flex items-center gap-1">
+      <span className="text-sm font-bold text-blue-600">{label}</span>
+      <span className="rounded bg-blue-600 px-1 py-0.5 text-[9px] font-bold leading-none text-white">오늘</span>
     </span>
   ) : (
-    <span className={`text-xs font-medium ${weekdayColor}`}>{label}</span>
+    <span className={`text-xs font-medium ${holidayName ? "text-red-500" : weekdayColor}`}>{label}</span>
   );
 
   return (
-    <div className="flex justify-end px-1 pt-1">
+    <div className="flex flex-col items-end px-1 pt-1">
       {drilldownView ? (
         <button type="button" className="rbc-button-link" onClick={onDrillDown}>
           {content}
@@ -47,6 +63,9 @@ function MonthDateHeader({ date, label, drilldownView, onDrillDown }: DateHeader
       ) : (
         content
       )}
+      {/* Step(한국 공휴일 표시, 요청사항 6) — Task/Gantt bar보다 시각적으로
+          강하지 않게, 아주 작은 글씨로 날짜 아래 표시한다. */}
+      {holidayName && <span className="max-w-full truncate text-[9px] font-medium text-red-500/80">{holidayName}</span>}
     </div>
   );
 }
@@ -76,8 +95,16 @@ const messages = {
 
 const DnDCalendar = withDragAndDrop<CalendarTaskEvent>(Calendar);
 
-/** MEETING/HALF_DAY는 하루짜리 일정이라 Resize를 금지한다(요청사항). */
-const NON_RESIZABLE_CATEGORIES = new Set<TaskCategory>([TaskCategory.MEETING, TaskCategory.HALF_DAY]);
+/** MEETING/HALF_DAY는 하루짜리 일정이라 Resize를 금지한다(요청사항). 시스템
+ * 예약 key(문자열)만 비교하므로 사용자가 label을 바꿔도 그대로 동작한다. */
+const NON_RESIZABLE_CATEGORIES = new Set<string>([TaskCategory.MEETING, TaskCategory.HALF_DAY]);
+
+/** categoryOptionId/statusOptionId(문자열 id)로 색상을 찾는다 — 못 찾으면
+ * (예: 데이터 정합성 문제) 중립 회색으로 안전하게 대체한다. */
+function findTint(options: ScheduleOptionInfo[], id: string) {
+  const option = options.find((o) => o.id === id);
+  return tintFromColor(option?.color ?? "#94a3b8");
+}
 
 function toDateOnly(d: Date): string {
   const pad = (n: number) => String(n).padStart(2, "0");
@@ -101,11 +128,19 @@ function toDateOnly(d: Date): string {
 export function CalendarView({
   tasks,
   users,
+  taskCategoryOptions,
+  taskStatusOptions,
+  projectCategories,
   onSelectTask,
   onSelectSlot,
 }: {
   tasks: TaskWithRelations[];
   users: ScheduleUser[];
+  taskCategoryOptions: ScheduleOptionInfo[];
+  taskStatusOptions: ScheduleOptionInfo[];
+  /** Step(일정 관리 + 회의록 UI Polish) — "프로젝트 카테고리" 필터(요청사항
+   * 2)에 그대로 넘긴다. */
+  projectCategories: ProjectCategoryOption[];
   onSelectTask: (task: TaskWithRelations) => void;
   onSelectSlot: (range: { start: Date; end: Date }) => void;
 }) {
@@ -150,6 +185,21 @@ export function CalendarView({
    * 날짜로 되돌리고 오류를 배너로 보여준다. 사유 입력 등은 이번 Step 범위가 아니다.
    */
   async function commitDateChange(task: TaskWithRelations, newStart: Date, newEnd: Date) {
+    // Step(Month/Week Drag·Resize UX 통일) — Month(handleEventDrop/
+    // handleEventResize, react-big-calendar 자체 DnD)와 Week(CustomWeekView
+    // 자체 pointer 구현) 양쪽의 "drag 결과를 최종 commit하는" 공통 지점이
+    // 바로 여기다. react-big-calendar는 Selection 유틸로 click/drag는
+    // 스스로 구분하지만 그 이후 브라우저가 별도로 합성하는 native click까지
+    // 막아주지는 않는다 — 실측 결과 Month View도 Week View와 동일하게
+    // resize 직후 Bar/빈 셀 click이 그대로 통과해 팝업이 잘못 열리는 문제가
+    // 재현됐다(lib/schedule/dragInteraction.ts 참고). 이 함수는 실제
+    // drag/resize가 threshold를 넘겨 커밋될 때만 호출되므로(Month는
+    // react-big-calendar의 5px tolerance를 넘겨야 handleEventDrop/
+    // handleEventResize 자체가 호출됨, Week는 CustomWeekView가 자체
+    // DRAG_THRESHOLD_PX 통과 후에만 호출) 여기 한 곳에서만 억제해도 두 View
+    // 모두 커버된다.
+    suppressClicksAfterDragInteraction();
+
     const newStartDate = toDateOnly(newStart);
     const newDueDate = toDateOnly(newEnd);
     if (newStartDate === task.startDate.slice(0, 10) && newDueDate === task.dueDate.slice(0, 10)) return;
@@ -195,7 +245,14 @@ export function CalendarView({
   return (
     <div className="flex h-full min-h-[480px] flex-col">
       <div className="mb-2 shrink-0 space-y-1">
-        <ScheduleFilterBar users={users} filters={filters} onChange={setFilters} />
+        <ScheduleFilterBar
+          users={users}
+          categoryOptions={taskCategoryOptions}
+          statusOptions={taskStatusOptions}
+          projectCategories={projectCategories}
+          filters={filters}
+          onChange={setFilters}
+        />
         {dragError && <p className="text-xs text-red-600">{dragError}</p>}
       </div>
       <style>{`
@@ -225,16 +282,57 @@ export function CalendarView({
         .rbc-addons-dnd-resize-ew-anchor { width: 10px; display: flex; }
         .rbc-addons-dnd-resize-ew-anchor:first-child { justify-content: flex-start; }
         .rbc-addons-dnd-resize-ew-anchor:last-child { justify-content: flex-end; }
-        .rbc-addons-dnd-resize-ew-icon { opacity: 0; transition: opacity 0.1s; }
+        /* Step(Month/Week Drag·Resize UX 통일, 요청사항 2) — react-big-calendar
+           기본 아이콘(border-left: 3px double, 이중선 모양)을 지우고
+           CustomWeekView의 손잡이(w-1 rounded-full, 업무구분 accent 색)와
+           같은 모양(가늘고 둥근 세로 막대)으로 맞춘다. 색은 eventPropGetter가
+           style에 심어주는 --handle-color 변수를 그대로 쓴다(업무구분 accent
+           tint.border) — Bar마다 색이 다르므로 고정값을 못 쓴다. anchor가
+           .rbc-addons-dnd-resizable(항상 부모 content-box 안, width/height
+           100%)의 padding 안쪽에서만 절대배치되므로 3px overdue border와는
+           애초에 겹치지 않는다(border는 그 바깥쪽 border-box에 그려짐). */
+        /* react-big-calendar.css의 기본 규칙(.rbc-addons-dnd .rbc-addons-dnd-resize-ew-anchor
+           .rbc-addons-dnd-resize-ew-icon)이 클래스 3단 선택자라 여기 1단
+           선택자보다 우선순위가 높다 — border-left/height는 !important 없이는
+           덮이지 않는 것을 실측으로 확인했다(라이브러리 기본값을 의도적으로
+           덮어쓰는 지점이라 !important 사용이 타당하다). */
+        .rbc-addons-dnd-resize-ew-icon {
+          border: none !important;
+          width: 4px;
+          height: 60% !important;
+          margin: auto 0;
+          border-radius: 9999px;
+          background-color: var(--handle-color, currentColor);
+          opacity: 0;
+          transition: opacity 0.1s;
+        }
         .rbc-event:hover .rbc-addons-dnd-resize-ew-icon { opacity: 0.9; }
-        /* 오늘 Column/Cell 배경은 아주 연하게만(요청사항 8) — Cell 전체를 강한
-           색으로 채우지 않는다. */
-        .rbc-day-bg.rbc-today { background-color: var(--color-navy-50); }
+        /* Step(Month/Week 오늘 배경 제거) — 오늘 Cell 전체를 채우던 옅은
+           background tint를 제거하고 흰색(다른 날짜와 동일)으로 통일한다.
+           오늘 여부는 MonthDateHeader의 파란 텍스트 + "오늘" badge만으로
+           표현한다(요청사항) — 그 둘은 이 CSS와 무관하게 그대로 유지된다.
+           react-big-calendar.css 기본값(.rbc-today 셀렉터에 background-color:
+           #eaf6ff, 우리가 쓴 적 없는 라이브러리 자체 색)이 이 요소에도
+           그대로 적용되고 있어(실측 확인) 이전 커스텀 override 규칙을
+           단순히 지우기만 해서는 배경이 사라지지 않는다 — .rbc-day-bg.
+           rbc-today(클래스 2개, 라이브러리의 .rbc-today 단독 선택자보다
+           우선순위가 높음)로 명시적으로 투명 처리해야 실제로 흰색이 된다. */
+        .rbc-day-bg.rbc-today { background-color: transparent; }
+        /* Step(월 경계 표현 개선, 요청사항 5) — react-big-calendar 기본값은
+           이전/다음 달 날짜의 Cell 배경 전체를 회색으로 채워, 실제 업무일
+           (예: 9월 첫 주에 보이는 8/31)이 "비활성"처럼 보이는 문제가 있었다
+           (요청사항 예시 그대로 재현 확인). Cell 배경은 완전히 투명하게 두고
+           (평일 배경과 동일하게), 날짜 숫자/월 표시만 흐리게 하는 건
+           MonthDateHeader의 opacity(아래)로 대신한다 — "월 경계"와 "비활성
+           날짜"가 시각적으로 섞이지 않게 한다. */
+        .rbc-off-range-bg { background-color: transparent; }
+        .rbc-off-range { opacity: 0.45; }
       `}</style>
       <div className="min-h-0 flex-1">
         <WeekViewUsersContext.Provider
           value={{
             users,
+            taskCategoryOptions,
             onEventDateChange: (event, newStart, newEnd) => void commitDateChange(event.task, newStart, newEnd),
           }}
         >
@@ -262,10 +360,16 @@ export function CalendarView({
             onSelectEvent={(event: CalendarTaskEvent) => onSelectTask(event.task)}
             onSelectSlot={(slot: SlotInfo) => onSelectSlot({ start: slot.start, end: slot.end })}
             eventPropGetter={(event: CalendarTaskEvent) => {
-              const overdue = isTaskOverdue(event.task.dueDate, event.task.status);
-              const done = event.task.status === "DONE";
-              const onHold = event.task.status === TaskStatus.ON_HOLD;
-              const tint = TASK_CATEGORY_TINTS[event.task.category];
+              // Step 5B-7(미팅 회차별 자동 상태) — MEETING은 저장된 statusOptionId가
+              // 아니라 "이 회차(event.start)의 날짜 + 시작/종료 시각 + 지금 시각"으로
+              // 매 렌더마다 다시 계산한 상태를 쓴다(단발/반복 공용, 원본 Task Row는
+              // 절대 건드리지 않는다). MEETING이 아니거나 사용자가 직접 예외 상태
+              // (보류 등)로 바꿨다면 이 함수가 그대로 저장된 값을 돌려준다.
+              const effectiveStatus = getEffectiveTaskStatus(event.task, event.start);
+              const overdue = isTaskOverdue(event.task.dueDate, effectiveStatus, event.task.category);
+              const done = effectiveStatus === TaskStatus.DONE;
+              const onHold = effectiveStatus === TaskStatus.ON_HOLD;
+              const tint = findTint(taskCategoryOptions, event.task.category);
               return {
                 style: {
                   backgroundColor: tint.bg,
@@ -276,7 +380,18 @@ export function CalendarView({
                   // 다른 CSS 속성(boxShadow vs border)을 써서 절대 충돌하지
                   // 않게 한다.
                   boxShadow: `inset 3px 0 0 0 ${tint.border}`,
-                  border: overdue ? "1px solid #dc2626" : "1px solid transparent",
+                  // Step(Month View overdue border 가시성 보완) — Week View
+                  // (CustomWeekView.tsx EventBar)에 이미 적용된 기준(3px solid
+                  // #dc2626 / 비지연 3px solid transparent)을 Month View에도
+                  // 동일하게 맞춘다. eventPropGetter가 반환하는 이 style은
+                  // react-big-calendar가 .rbc-event에 인라인으로 그대로
+                  // 적용하므로(react-big-calendar.css의 `.rbc-event { border:
+                  // none }`는 class 기반 규칙이라 인라인 style보다 우선순위가
+                  // 낮다 — 확인 완료, 별도 override 불필요) 이 값이 곧
+                  // 최종 computed border다. 비지연 Bar도 동일 폭(3px
+                  // transparent)으로 맞춰 상태에 따라 Bar 크기가 흔들리지
+                  // 않게 한다.
+                  border: overdue ? "3px solid #dc2626" : "3px solid transparent",
                   opacity: done ? 0.55 : onHold ? 0.7 : 1,
                   textDecoration: done ? "line-through" : undefined,
                   fontWeight: 500,
@@ -284,7 +399,13 @@ export function CalendarView({
                   textOverflow: "ellipsis",
                   whiteSpace: "nowrap",
                   maxWidth: "100%",
-                },
+                  // Step(Month/Week Drag·Resize UX 통일) — 아래 CSS의 resize
+                  // 손잡이(.rbc-addons-dnd-resize-ew-icon)가 이 Bar의
+                  // 업무구분 accent 색(tint.border)을 그대로 쓰도록 CSS
+                  // 변수로 전달한다. React CSSProperties 타입에는 커스텀
+                  // property가 없어 캐스팅이 필요하다.
+                  "--handle-color": tint.border,
+                } as React.CSSProperties,
               };
             }}
             style={{ height: "100%" }}

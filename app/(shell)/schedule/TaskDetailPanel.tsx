@@ -3,22 +3,23 @@
 import { useEffect, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { usePrefetchOnIntent } from "@/hooks/usePrefetchOnIntent";
-import { TaskCategory, TaskStatus } from "@/app/generated/prisma/enums";
 import {
   HALF_DAY_PERIOD_LABELS,
   HALF_DAY_PERIOD_OPTIONS,
-  TASK_CATEGORY_LABELS,
-  TASK_CATEGORY_OPTIONS,
-  TASK_CATEGORY_TINTS,
-  TASK_STATUS_LABELS,
-  TASK_STATUS_OPTIONS,
-  TASK_STATUS_TINTS,
+  TASK_CATEGORY_KEY as TaskCategory,
+  TASK_STATUS_KEY as TaskStatus,
   getUserInitials,
   getUserTint,
+  tintFromColor,
 } from "@/lib/schedule/constants";
+import { computeMeetingOccurrenceStatus } from "@/lib/schedule/meetingStatus";
+import { computeFirstOccurrenceOnOrAfter, type RecurrenceRule } from "@/lib/schedule/recurrence";
 import type {
+  AssigneeMode,
+  ProjectCategoryGroupOption,
   ProjectCategoryOption,
   ScheduleCurrentUser,
+  ScheduleOptionInfo,
   ScheduleUser,
   TaskCommentInfo,
   TaskFormInput,
@@ -27,17 +28,16 @@ import type {
 } from "@/lib/schedule/types";
 import {
   addTaskScheduleRevisionAction,
-  createProjectCategoryAction,
   createTaskAction,
   deleteTaskAction,
   deleteTaskScheduleRevisionAction,
   getTaskCommentsAction,
   getTaskDetailAction,
-  removeProjectCategoryAction,
   updateTaskAction,
   updateTaskScheduleRevisionAction,
 } from "./actions";
 import { DateTextInput } from "./DateTextInput";
+import { ProjectCategorySelect } from "./ProjectCategorySelect";
 import { RecurrenceFields } from "./RecurrenceFields";
 import { TimeSelect } from "./TimeSelect";
 
@@ -71,6 +71,14 @@ function toLocalTimeString(iso: string | null): string {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+/** Date 객체(연/월/일만 쓴다) → "YYYY-MM-DD" — toLocalDateString(ISO 문자열용)과
+ * 같은 로컬 규칙이지만 입력이 이미 Date인 경우(반복 미팅 anchor 자동 계산 결과)
+ * 를 위한 버전이다. */
+function dateToLocalDateString(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
 /** "일정 변경 이력"에 쓰는 "2026.08.27 10:30" 형태 표시용(저장 형식과는 무관). */
 function formatDateTime(iso: string): string {
   const d = new Date(iso);
@@ -78,7 +86,11 @@ function formatDateTime(iso: string): string {
   return `${d.getFullYear()}.${pad(d.getMonth() + 1)}.${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-function buildInitialInput(task: TaskWithRelations | null, defaults?: { startDate?: string; dueDate?: string }): TaskFormInput {
+function buildInitialInput(
+  task: TaskWithRelations | null,
+  currentUserId: string,
+  defaults?: { startDate?: string; dueDate?: string },
+): TaskFormInput {
   if (!task) {
     return {
       title: "",
@@ -95,14 +107,22 @@ function buildInitialInput(task: TaskWithRelations | null, defaults?: { startDat
       attendeeIds: [],
       meetingDate: defaults?.startDate ?? "",
       meetingStartTime: "",
+      meetingEndTime: "",
       location: "",
+      // Step(담당자 UX 개선, 요청사항 2) — 신규 등록은 항상 "내 일정"이 기본값,
+      // 로그인 사용자를 자동 담당으로 미리 채운다.
+      assigneeMode: "ME",
+      assigneeIds: [currentUserId],
       recurrenceType: "NONE",
+      recurrenceInterval: "1",
       recurrenceWeekdays: [],
       recurrenceMonthlyRuleType: "DAY_OF_MONTH",
       recurrenceMonthDay: "",
       recurrenceMonthlyWeekOrdinal: "",
       recurrenceMonthlyWeekday: "MON",
+      recurrenceEndType: "NONE",
       recurrenceEndDate: "",
+      recurrenceCount: "",
     };
   }
   return {
@@ -123,14 +143,24 @@ function buildInitialInput(task: TaskWithRelations | null, defaults?: { startDat
     attendeeIds: task.meetingDetail?.attendeeIds ?? [],
     meetingDate: toLocalDateString(task.meetingDetail?.time ?? null) || task.dueDate.slice(0, 10),
     meetingStartTime: toLocalTimeString(task.meetingDetail?.time ?? null),
+    meetingEndTime: toLocalTimeString(task.meetingDetail?.endTime ?? null),
     location: task.meetingDetail?.location ?? "",
+    // Step(담당자 UX 개선, 요청사항 4) — 기존 Task는 저장된 담당자 정보를
+    // 그대로 복원한다. "내 일정"으로 자동 덮어쓰지 않는다 — isCommonAssignee가
+    // true면 무조건 "공통"(담당자가 우연히 나 자신 1명이어도 "직접 지정"으로
+    // 표시해 저장된 의미를 그대로 보존한다).
+    assigneeMode: task.isCommonAssignee ? "COMMON" : "CUSTOM",
+    assigneeIds: task.assigneeIds,
     recurrenceType: task.recurrence.type,
+    recurrenceInterval: String(task.recurrence.interval || 1),
     recurrenceWeekdays: task.recurrence.weekdays,
     recurrenceMonthlyRuleType: task.recurrence.monthlyRuleType ?? "DAY_OF_MONTH",
     recurrenceMonthDay: task.recurrence.monthDay != null ? String(task.recurrence.monthDay) : "",
     recurrenceMonthlyWeekOrdinal: task.recurrence.monthlyWeekOrdinal != null ? String(task.recurrence.monthlyWeekOrdinal) : "",
     recurrenceMonthlyWeekday: task.recurrence.monthlyWeekday ?? "MON",
+    recurrenceEndType: task.recurrence.count != null ? "COUNT" : task.recurrence.endDate ? "DATE" : "NONE",
     recurrenceEndDate: task.recurrence.endDate ? task.recurrence.endDate.slice(0, 10) : "",
+    recurrenceCount: task.recurrence.count != null ? String(task.recurrence.count) : "",
   };
 }
 
@@ -140,6 +170,25 @@ function toggleId(list: string[], id: string): string[] {
 
 const inputClass = "w-full rounded-md border border-navy-100 px-3 py-1.5 text-sm";
 const labelClass = "text-xs font-medium text-navy-950/60";
+
+/** Step 5B-7(미팅 상태 입력 UX) — 이 3개는 MEETING에서 사용자가 직접 고르지
+ * 않는다(시간으로 자동 결정). 보류 등 나머지 옵션은 계속 클릭 가능하다. */
+const AUTO_MANAGED_MEETING_STATUS_IDS = new Set<string>([TaskStatus.TODO, TaskStatus.IN_PROGRESS, TaskStatus.DONE]);
+
+/** Step 5B-7(반복 미팅 anchor 자동 계산) — 이 필드들이 바뀌면 "반복 규칙을
+ * 실제로 건드렸다"고 간주한다(recurrenceTouched). */
+const RECURRENCE_FIELD_KEYS = new Set<keyof TaskFormInput>([
+  "recurrenceType",
+  "recurrenceInterval",
+  "recurrenceWeekdays",
+  "recurrenceMonthlyRuleType",
+  "recurrenceMonthDay",
+  "recurrenceMonthlyWeekOrdinal",
+  "recurrenceMonthlyWeekday",
+  "recurrenceEndType",
+  "recurrenceEndDate",
+  "recurrenceCount",
+]);
 
 function canModify(currentUser: ScheduleCurrentUser, authorId: string): boolean {
   return currentUser.id === authorId || currentUser.role === "ADMIN";
@@ -172,17 +221,40 @@ function FormRow({ label, children }: { label: string; children: React.ReactNode
   );
 }
 
-/** 업무 구분 select — native select를 그대로 쓰되(요청사항 14: dropdown 유지,
- * DB enum/값 변경 금지) 선택된 Category의 저채도 색을 select 자체에 입혀
- * "작은 color icon + 한국어 이름"처럼 보이게 한다(왼쪽 점 + 색 텍스트). */
+/** Step(일정 관리 + 회의록 UI Polish) — 입력 순서 재배치(요청사항 3)에 맞춰
+ * "무슨 일 → 어떤 프로젝트 → 언제 → 상태 → 누가 → 반복 → 기타"의 각 구간을
+ * 시각적으로 나누는 얇은 구분선 + 소제목. 필드 순서/저장 로직은 전혀
+ * 건드리지 않고 그룹 헤더만 추가한다. */
+function SectionLabel({ children, first }: { children: React.ReactNode; first?: boolean }) {
+  return (
+    <p className={`text-[11px] font-semibold uppercase tracking-wide text-navy-950/40 ${first ? "" : "border-t border-navy-100 pt-3.5"}`}>
+      {children}
+    </p>
+  );
+}
+
+/** 업무 구분 select — native select를 그대로 쓰되(요청사항 14: dropdown 유지)
+ * 선택된 Category의 저채도 색을 select 자체에 입혀 "작은 color icon + 한국어
+ * 이름"처럼 보이게 한다(왼쪽 점 + 색 텍스트).
+ *
+ * Step 5B-4(사용자 정의 업무구분) — options는 이제 DB에서 온 동적 목록이다.
+ * 비활성 옵션은 "새 일정 등록" dropdown에서는 숨기되(요청사항), 지금 이 Task가
+ * 이미 그 옵션을 쓰고 있으면(수정 화면을 여는 순간의 value) 목록에서 빼지
+ * 않는다 — 그러지 않으면 비활성화된 업무구분으로 저장된 기존 Task를 열었을 때
+ * select가 아무것도 선택되지 않은 것처럼 보이고, 저장하지 않고 다른 필드만
+ * 바꿔도 업무구분이 조용히 다른 값으로 바뀌는 사고가 날 수 있다. */
 function CategorySelect({
   value,
   onChange,
+  options,
 }: {
   value: TaskFormInput["category"];
   onChange: (value: TaskFormInput["category"]) => void;
+  options: ScheduleOptionInfo[];
 }) {
-  const tint = TASK_CATEGORY_TINTS[value];
+  const current = options.find((o) => o.id === value);
+  const tint = tintFromColor(current?.color ?? "#94a3b8");
+  const visibleOptions = options.filter((o) => o.active || o.id === value);
   return (
     <div className="relative">
       <span
@@ -194,11 +266,12 @@ function CategorySelect({
         className={`${inputClass} pl-6 font-medium`}
         style={{ backgroundColor: tint.bg, color: tint.text, borderColor: tint.border }}
         value={value}
-        onChange={(e) => onChange(e.target.value as TaskFormInput["category"])}
+        onChange={(e) => onChange(e.target.value)}
       >
-        {TASK_CATEGORY_OPTIONS.map((c) => (
-          <option key={c} value={c}>
-            {TASK_CATEGORY_LABELS[c]}
+        {visibleOptions.map((c) => (
+          <option key={c.id} value={c.id}>
+            {c.label}
+            {!c.active ? " (비활성)" : ""}
           </option>
         ))}
       </select>
@@ -207,25 +280,36 @@ function CategorySelect({
 }
 
 /** 상태 입력 — 일반 Select 대신 카드형 segmented 선택(요청사항 15). 값 자체는
- * 기존 TaskStatus 그대로이고, 저채도 색만 입힌다. */
+ * TaskStatusOption.id이고, 그 옵션의 색만 입힌다. CategorySelect와 동일하게
+ * 비활성 옵션도 "현재 선택된 값"이면 목록에 남긴다. */
 function StatusSegmented({
   value,
   onChange,
+  options,
+  lockedIds,
 }: {
   value: TaskFormInput["status"];
   onChange: (value: TaskFormInput["status"]) => void;
+  options: ScheduleOptionInfo[];
+  /** Step 5B-7(미팅 상태 입력 UX) — MEETING은 예정/진행중/완료가 시간으로
+   * 자동 결정되므로 이 3개는 클릭해도 아무 일도 일어나지 않는다(정보 표시
+   * 전용) — 그 외(보류 등 예외) 옵션은 그대로 클릭 가능하다. */
+  lockedIds?: Set<string>;
 }) {
+  const visibleOptions = options.filter((o) => o.active || o.id === value);
   return (
     <div className="flex flex-wrap gap-1.5">
-      {TASK_STATUS_OPTIONS.map((s) => {
-        const tint = TASK_STATUS_TINTS[s];
-        const selected = value === s;
+      {visibleOptions.map((s) => {
+        const tint = tintFromColor(s.color);
+        const selected = value === s.id;
+        const locked = lockedIds?.has(s.id) ?? false;
         return (
           <button
-            key={s}
+            key={s.id}
             type="button"
-            onClick={() => onChange(s)}
-            className="rounded-md border px-3 py-1.5 text-xs font-medium"
+            disabled={locked}
+            onClick={() => onChange(s.id)}
+            className={`rounded-md border px-3 py-1.5 text-xs font-medium ${locked ? "cursor-default" : ""}`}
             style={{
               backgroundColor: tint.bg,
               color: tint.text,
@@ -234,7 +318,8 @@ function StatusSegmented({
               opacity: selected ? 1 : 0.6,
             }}
           >
-            {TASK_STATUS_LABELS[s]}
+            {s.label}
+            {!s.active ? " (비활성)" : ""}
           </button>
         );
       })}
@@ -242,141 +327,76 @@ function StatusSegmented({
   );
 }
 
-/** 담당자는 현재 정책대로 Session User 자동 지정이라 여기서는 항상 읽기
- * 전용으로만 보여준다(요청사항 13) — 재지정 UI를 새로 만들지 않는다. */
-function AssigneeReadOnlyRow({ assignees, allUsers }: { assignees: ScheduleUser[]; allUsers: ScheduleUser[] }) {
-  if (assignees.length === 0) {
-    return <p className="pt-1.5 text-xs text-navy-950/40">담당자 없음</p>;
-  }
-  return (
-    <div className="flex flex-wrap gap-2 pt-0.5">
-      {assignees.map((u) => {
-        const globalIndex = allUsers.findIndex((au) => au.id === u.id);
-        const tint = getUserTint(Math.max(globalIndex, 0));
-        return (
-          <span key={u.id} className="flex items-center gap-1.5 rounded-full border border-navy-100 py-0.5 pl-0.5 pr-2.5 text-xs">
-            <span
-              className="flex h-6 w-6 shrink-0 items-center justify-center whitespace-nowrap rounded-full text-[10px] font-semibold"
-              style={{ backgroundColor: tint.avatarBg, color: tint.avatarText }}
-            >
-              {getUserInitials(u.name, u.email)}
-            </span>
-            <span className="text-navy-950/80">{u.name ?? u.email}</span>
-          </span>
-        );
-      })}
-    </div>
-  );
-}
-
-function ProjectCategoryPicker({
-  categoryId,
-  onChange,
-  categories,
-  onCategoriesChange,
+/**
+ * Step(담당자 UX 개선, 요청사항 2·3) — "내 일정/공통/직접 지정" segmented
+ * 선택. 신규는 항상 "내 일정"이 기본값(buildInitialInput)이고, 기존 Task는
+ * 저장된 값 그대로 복원된다(isCommonAssignee ? COMMON : CUSTOM) — 이 컴포넌트
+ * 자체는 순수 표현 + onChange 위임만 한다(다른 FormRow와 동일한 패턴).
+ */
+function AssigneeModeSelector({
+  mode,
+  assigneeIds,
+  currentUser,
+  users,
+  onModeChange,
+  onAssigneeIdsChange,
 }: {
-  categoryId: string;
-  onChange: (id: string) => void;
-  categories: ProjectCategoryOption[];
-  onCategoriesChange: (categories: ProjectCategoryOption[]) => void;
+  mode: AssigneeMode;
+  assigneeIds: string[];
+  currentUser: ScheduleCurrentUser;
+  users: ScheduleUser[];
+  onModeChange: (mode: AssigneeMode) => void;
+  onAssigneeIdsChange: (ids: string[]) => void;
 }) {
-  const [managing, setManaging] = useState(false);
-  const [newName, setNewName] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [localError, setLocalError] = useState<string | null>(null);
-
-  const activeCategories = categories.filter((c) => c.active);
-
-  async function handleAdd() {
-    if (!newName.trim()) return;
-    setBusy(true);
-    setLocalError(null);
-    const res = await createProjectCategoryAction(newName.trim());
-    setBusy(false);
-    if (res.error || !res.category) {
-      setLocalError(res.error ?? "카테고리를 추가하지 못했습니다.");
-      return;
-    }
-    const next = categories.some((c) => c.id === res.category!.id)
-      ? categories.map((c) => (c.id === res.category!.id ? res.category! : c))
-      : [...categories, res.category];
-    onCategoriesChange(next);
-    onChange(res.category.id);
-    setNewName("");
-  }
-
-  async function handleRemove(id: string) {
-    setBusy(true);
-    setLocalError(null);
-    const res = await removeProjectCategoryAction(id);
-    setBusy(false);
-    if (res.error) {
-      setLocalError(res.error);
-      return;
-    }
-    if (res.deactivated) {
-      onCategoriesChange(categories.map((c) => (c.id === id ? { ...c, active: false } : c)));
-      if (categoryId === id) onChange("");
-    } else {
-      onCategoriesChange(categories.filter((c) => c.id !== id));
-      if (categoryId === id) onChange("");
-    }
-  }
+  const me = users.find((u) => u.id === currentUser.id);
+  const MODE_LABELS: Record<AssigneeMode, string> = { ME: "내 일정", COMMON: "공통", CUSTOM: "직접 지정" };
 
   return (
-    <div className="space-y-1">
-      <div className="flex items-center justify-between">
-        <label className={labelClass}>프로젝트 카테고리</label>
-        <button type="button" onClick={() => setManaging((v) => !v)} className="text-xs text-navy-950/50 hover:text-navy-950">
-          카테고리 관리
-        </button>
-      </div>
-      <select className={inputClass} value={categoryId} onChange={(e) => onChange(e.target.value)}>
-        <option value="">선택 안 함</option>
-        {activeCategories.map((c) => (
-          <option key={c.id} value={c.id}>
-            {c.name}
-          </option>
+    <div className="space-y-2 pt-0.5">
+      <div className="flex gap-1.5">
+        {(["ME", "COMMON", "CUSTOM"] as const).map((m) => (
+          <button
+            key={m}
+            type="button"
+            onClick={() => onModeChange(m)}
+            className={`rounded-md border px-3 py-1.5 text-xs font-medium ${
+              mode === m ? "border-navy-900 bg-navy-900 text-white" : "border-navy-100 text-navy-950/60 hover:bg-navy-50"
+            }`}
+          >
+            {MODE_LABELS[m]}
+          </button>
         ))}
-      </select>
+      </div>
 
-      {managing && (
-        <div className="mt-2 space-y-2 rounded-md border border-navy-100 p-2">
-          <div className="flex gap-2">
-            <input
-              className={inputClass}
-              placeholder="새 카테고리명"
-              value={newName}
-              onChange={(e) => setNewName(e.target.value)}
-            />
-            <button
-              type="button"
-              onClick={handleAdd}
-              disabled={busy || !newName.trim()}
-              className="shrink-0 rounded-md bg-navy-900 px-3 py-1.5 text-xs text-white disabled:opacity-50"
-            >
-              추가
-            </button>
-          </div>
-          {localError && <p className="text-xs text-red-600">{localError}</p>}
-          <ul className="max-h-32 space-y-1 overflow-y-auto">
-            {categories.map((c) => (
-              <li key={c.id} className="flex items-center justify-between text-xs">
-                <span className={c.active ? "text-navy-950" : "text-navy-950/40 line-through"}>
-                  {c.name} {!c.active && "(비활성)"}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => handleRemove(c.id)}
-                  disabled={busy}
-                  className="text-red-600 hover:underline disabled:opacity-50"
+      {mode === "ME" && <p className="text-xs text-navy-950/60">{me?.name ?? me?.email ?? "나"}(으)로 자동 등록됩니다.</p>}
+
+      {mode === "COMMON" && <p className="text-xs text-navy-950/40">특정 담당자 없이 공통 업무로 등록됩니다.</p>}
+
+      {mode === "CUSTOM" && (
+        <div className="flex flex-wrap gap-1.5">
+          {users.map((u, i) => {
+            const tint = getUserTint(i);
+            const selected = assigneeIds.includes(u.id);
+            return (
+              <button
+                key={u.id}
+                type="button"
+                onClick={() => onAssigneeIdsChange(toggleId(assigneeIds, u.id))}
+                className={`flex items-center gap-1.5 rounded-full border py-0.5 pl-0.5 pr-2.5 text-xs ${
+                  selected ? "border-navy-900" : "border-navy-100 hover:bg-navy-50"
+                }`}
+              >
+                <span
+                  className="flex h-6 w-6 shrink-0 items-center justify-center whitespace-nowrap rounded-full text-[10px] font-semibold"
+                  style={{ backgroundColor: tint.avatarBg, color: tint.avatarText }}
                 >
-                  삭제
-                </button>
-              </li>
-            ))}
-            {categories.length === 0 && <li className="text-navy-950/40">등록된 카테고리가 없습니다.</li>}
-          </ul>
+                  {getUserInitials(u.name, u.email)}
+                </span>
+                <span className={selected ? "text-navy-950" : "text-navy-950/70"}>{u.name ?? u.email}</span>
+              </button>
+            );
+          })}
+          {assigneeIds.length === 0 && <p className="w-full text-[11px] text-red-600">담당자를 1명 이상 선택해 주세요.</p>}
         </div>
       )}
     </div>
@@ -648,6 +668,9 @@ export function TaskDetailPanel({
   task,
   users,
   projectCategories,
+  projectCategoryGroups,
+  taskCategoryOptions,
+  taskStatusOptions,
   currentUser,
   onClose,
   defaultStartDate,
@@ -659,6 +682,14 @@ export function TaskDetailPanel({
   task: TaskWithRelations | null;
   users: ScheduleUser[];
   projectCategories: ProjectCategoryOption[];
+  /** Step 5B-5(2단계 계층화) — ProjectCategorySelect의 대분류 목록. 카테고리
+   * 추가/수정은 이제 "일정 설정"(ADMIN)에서만 하므로, 여기서는 두 목록 모두
+   * 순수 조회/선택용으로만 쓰인다(로컬에서 직접 수정하지 않는다). */
+  projectCategoryGroups: ProjectCategoryGroupOption[];
+  /** Step 5B-4(사용자 정의 업무구분/상태) — CategorySelect/StatusSegmented가
+   * 쓰는 동적 목록. ScheduleClient가 설정 화면 변경 결과를 반영해 내려준다. */
+  taskCategoryOptions: ScheduleOptionInfo[];
+  taskStatusOptions: ScheduleOptionInfo[];
   currentUser: ScheduleCurrentUser;
   onClose: () => void;
   defaultStartDate?: string;
@@ -669,9 +700,15 @@ export function TaskDetailPanel({
   initialFocusCommentId?: string;
 }) {
   const [input, setInput] = useState<TaskFormInput>(() =>
-    buildInitialInput(task, { startDate: defaultStartDate, dueDate: defaultDueDate }),
+    buildInitialInput(task, currentUser.id, { startDate: defaultStartDate, dueDate: defaultDueDate }),
   );
-  const [categories, setCategories] = useState<ProjectCategoryOption[]>(projectCategories);
+  // Step 5B-7(미팅 반복일정 UX) — 반복 규칙(요일/월 규칙)을 사용자가 이 화면
+  // 안에서 실제로 건드렸는지 추적한다. 아직 안 건드렸으면(기존 반복 미팅을
+  // 열어 제목만 고치는 등) anchor 재계산 기준일을 "지금 로드된 미팅 날짜
+  // 그대로"로 둬서 반복 회차가 조용히 밀리지 않게 하고, 한 번이라도 건드리면
+  // 그 순간부터는 "오늘" 기준으로 새 규칙에 맞는 첫 회차를 다시 계산한다
+  // (아래 computedMeetingAnchorDate 계산 참고).
+  const [recurrenceTouched, setRecurrenceTouched] = useState(false);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -717,6 +754,7 @@ export function TaskDetailPanel({
             attendeeIds: d.meetingDetail?.attendeeIds ?? [],
             meetingDate: toLocalDateString(d.meetingDetail?.time ?? null) || prev.meetingDate,
             meetingStartTime: toLocalTimeString(d.meetingDetail?.time ?? null),
+            meetingEndTime: toLocalTimeString(d.meetingDetail?.endTime ?? null),
             location: d.meetingDetail?.location ?? "",
           }));
           setSavedRevisions(d.scheduleRevisions);
@@ -791,6 +829,62 @@ export function TaskDetailPanel({
     setInput((prev) => ({ ...prev, [key]: value }));
   }
 
+  const isMeeting = input.category === TaskCategory.MEETING;
+
+  // Step 5B-7(반복 미팅 anchor 자동 계산) — "미팅 날짜 + 반복 규칙"을 이중으로
+  // 입력하지 않는다(요청사항): 반복이 켜져 있으면 날짜 input은 disabled로 잠그고,
+  // 이 값을 대신 화면에 보여준다. state에 따로 저장하지 않고(불필요한 useEffect
+  // 동기화를 피하려고) 매 렌더 순수 계산으로만 구한다 — recurrenceTouched가
+  // false면(이번 세션에서 반복 규칙을 아직 안 건드림) 지금 로드돼 있는
+  // meetingDate를 기준일로 써서 "제목만 고쳐 저장"해도 anchor가 조용히
+  // 밀리지 않게 하고, 한 번이라도 건드리면 그 순간부터 "오늘"을 기준으로
+  // 새 규칙에 맞는 첫 회차를 다시 찾는다.
+  const isMeetingRecurring = isMeeting && input.recurrenceType !== "NONE";
+  const meetingRecurrenceRule: RecurrenceRule = {
+    type: input.recurrenceType,
+    interval: 1,
+    weekdays: input.recurrenceWeekdays,
+    monthlyRuleType: input.recurrenceType === "MONTHLY" ? input.recurrenceMonthlyRuleType : null,
+    monthDay:
+      input.recurrenceType === "MONTHLY" && input.recurrenceMonthlyRuleType === "DAY_OF_MONTH" && input.recurrenceMonthDay
+        ? Number(input.recurrenceMonthDay)
+        : null,
+    monthlyWeekOrdinal:
+      input.recurrenceType === "MONTHLY" && input.recurrenceMonthlyRuleType === "NTH_WEEKDAY" && input.recurrenceMonthlyWeekOrdinal
+        ? Number(input.recurrenceMonthlyWeekOrdinal)
+        : null,
+    monthlyWeekday:
+      input.recurrenceType === "MONTHLY" && input.recurrenceMonthlyRuleType === "NTH_WEEKDAY" ? input.recurrenceMonthlyWeekday : null,
+    endDate: null,
+    count: null,
+  };
+  const meetingAnchorReferenceDate =
+    recurrenceTouched || !input.meetingDate ? new Date() : new Date(`${input.meetingDate}T00:00:00`);
+  const computedMeetingAnchorDate = isMeetingRecurring
+    ? computeFirstOccurrenceOnOrAfter(meetingRecurrenceRule, meetingAnchorReferenceDate)
+    : null;
+
+  // Step 5B-7(미팅 상태 입력 UX) — 저장된 statusOptionId가 예약 3종(예정/진행중/
+  // 완료)이면 "자동 관리 대상"이라 사용자가 실제로 지정한 값이 아니다. 이 경우
+  // 화면에는 항상 실시간 계산값을 보여준다 — 보류처럼 사람이 직접 고른 예외
+  // 상태만 그대로 존중한다(자동 계산이 덮어쓰지 않음).
+  const meetingStatusIsException = isMeeting && !AUTO_MANAGED_MEETING_STATUS_IDS.has(input.status);
+  const meetingDateForStatusPreview = isMeetingRecurring
+    ? computedMeetingAnchorDate
+      ? dateToLocalDateString(computedMeetingAnchorDate)
+      : ""
+    : input.meetingDate;
+  const meetingComputedStatus =
+    isMeeting && !meetingStatusIsException && meetingDateForStatusPreview && input.meetingStartTime && input.meetingEndTime
+      ? computeMeetingOccurrenceStatus(
+          new Date(`${meetingDateForStatusPreview}T00:00:00`),
+          new Date(`${meetingDateForStatusPreview}T${input.meetingStartTime}`).toISOString(),
+          new Date(`${meetingDateForStatusPreview}T${input.meetingEndTime}`).toISOString(),
+          new Date(),
+        )
+      : null;
+  const displayedStatus = meetingComputedStatus ?? input.status;
+
   function startDraftRevision() {
     setDraftRevision({
       // "현재 유효 일정"(input이 아니라 task의 effective 값)을 그대로 복사해
@@ -822,7 +916,12 @@ export function TaskDetailPanel({
     setSaving(true);
     setError(null);
     try {
-      const res = mode === "create" ? await createTaskAction(input) : await updateTaskAction(task!.id, input);
+      // 반복 미팅은 날짜 input이 disabled라 input.meetingDate 자체는 갱신되지
+      // 않는다 — 실제로 저장할 값은 화면에 보여준 자동 계산 anchor다.
+      const submitInput: TaskFormInput = computedMeetingAnchorDate
+        ? { ...input, meetingDate: dateToLocalDateString(computedMeetingAnchorDate) }
+        : input;
+      const res = mode === "create" ? await createTaskAction(submitInput) : await updateTaskAction(task!.id, submitInput);
       if (res.error) {
         setError(res.error);
         return;
@@ -861,19 +960,11 @@ export function TaskDetailPanel({
     }
   }
 
-  const isMeeting = input.category === TaskCategory.MEETING;
   // MEETING은 일반 시작일/마감일 UI 자체가 없어 애초에 제외, HALF_DAY는 하루짜리
   // 일정 특성상 공식 Revision 관리 대상에서 제외한다(요청사항 26 — 기존 저장된
   // HALF_DAY Revision이 있었다면 그대로 두고 이 Step에서 새로 만들지만 못하게
   // 막는 것인데, 실제 확인 결과 HALF_DAY Revision은 존재하지 않는다).
   const isRevisionEligible = !isMeeting && input.category !== TaskCategory.HALF_DAY;
-
-  // 담당자는 항상 읽기 전용 표시다(요청사항 13) — edit는 실제 TaskAssignee를,
-  // create는 "저장하면 자동 지정될 사람"(Session User 본인)을 미리 보여준다.
-  const assignees =
-    mode === "edit" && task
-      ? users.filter((u) => task.assigneeIds.includes(u.id))
-      : users.filter((u) => u.id === currentUser.id);
 
   return (
     <div
@@ -923,21 +1014,22 @@ export function TaskDetailPanel({
           </div>
         </div>
 
+        {/* Step(일정 관리 + 회의록 UI Polish) — 입력 순서 재배치(요청사항 3):
+            "무슨 일(업무명) → 어떤 프로젝트(프로젝트 정보) → 언제(일정) →
+            상태 → 누가(담당자) → 반복 → 기타 세부정보" 순서로 바꿨다. 각
+            필드의 value/onChange/validation(required 등)은 단 하나도 바꾸지
+            않았다 — JSX 배치 순서만 옮겼다. */}
         <div className="min-h-0 flex-1 space-y-3.5 overflow-y-auto px-5 py-4">
-          <FormRow label="업무 구분">
-            <CategorySelect value={input.category} onChange={(v) => set("category", v)} />
-          </FormRow>
-
+          {/* 1. 업무명 */}
           <FormRow label="업무명">
             <input className={inputClass} value={input.title} onChange={(e) => set("title", e.target.value)} required />
           </FormRow>
 
-          <FormRow label="상태">
-            <StatusSegmented value={input.status} onChange={(v) => set("status", v)} />
-          </FormRow>
-
-          <FormRow label="담당자">
-            <AssigneeReadOnlyRow assignees={assignees} allUsers={users} />
+          {/* 2. 프로젝트 정보 — 업무 구분 + (PROJECT면 프로젝트명/카테고리,
+              PERSONAL_GOAL이면 목표명) */}
+          <SectionLabel first>프로젝트 정보</SectionLabel>
+          <FormRow label="업무 구분">
+            <CategorySelect value={input.category} onChange={(v) => set("category", v)} options={taskCategoryOptions} />
           </FormRow>
 
           {input.category === TaskCategory.PROJECT && (
@@ -951,12 +1043,15 @@ export function TaskDetailPanel({
                   required
                 />
               </div>
-              <ProjectCategoryPicker
-                categoryId={input.categoryId}
-                onChange={(id) => set("categoryId", id)}
-                categories={categories}
-                onCategoriesChange={setCategories}
-              />
+              <div className="space-y-1">
+                <label className={labelClass}>프로젝트 카테고리</label>
+                <ProjectCategorySelect
+                  categoryId={input.categoryId}
+                  onChange={(id) => set("categoryId", id)}
+                  categories={projectCategories}
+                  groups={projectCategoryGroups}
+                />
+              </div>
             </div>
           )}
 
@@ -967,42 +1062,45 @@ export function TaskDetailPanel({
             </div>
           )}
 
+          {/* 3. 일정 — MEETING이면 미팅 날짜/시간, HALF_DAY면 오전/오후,
+              그 외에는 시작/마감일 + "+ 일정 변경"(같은 맥락이라 함께 둔다). */}
+          <SectionLabel>일정</SectionLabel>
           {isMeeting && (
-            <div className="space-y-3 rounded-md border border-navy-100 bg-navy-50/60 p-3">
-              <div className="grid grid-cols-2 gap-3">
+            <>
+              <FormRow label="미팅 날짜">
                 <div className="space-y-1">
-                  <label className={labelClass}>미팅 날짜</label>
-                  <DateTextInput className={inputClass} value={input.meetingDate} onChange={(v) => set("meetingDate", v)} required />
+                  {isMeetingRecurring && <span className="text-[11px] font-normal text-navy-950/40">반복 규칙으로 자동 계산됨</span>}
+                  {isMeetingRecurring ? (
+                    // DateTextInput은 8자리 숫자를 직접 타이핑하는 용도로 내부에
+                    // digits state를 따로 들고 있어(사용자가 지우는 중에도 자연스러운
+                    // 입력 UX를 위해) value prop이 나중에 외부(반복 규칙 변경)에서
+                    // 바뀌어도 그 내부 state가 따라가지 않는다 — 실사용 검증에서 실제로
+                    // 확인된 문제(요일을 바꿔도 화면 날짜가 그대로 멈춰 있음). 이 필드는
+                    // 어차피 disabled라 사용자가 타이핑할 일이 없으므로, 그 digits 로직
+                    // 없이 항상 최신 값을 그대로 반영하는 순수 읽기 전용 input으로 대신한다.
+                    <input
+                      type="text"
+                      readOnly
+                      disabled
+                      className={`${inputClass} cursor-not-allowed bg-navy-100/70 text-navy-950/50`}
+                      value={computedMeetingAnchorDate ? dateToLocalDateString(computedMeetingAnchorDate) : ""}
+                    />
+                  ) : (
+                    <DateTextInput className={inputClass} value={input.meetingDate} onChange={(v) => set("meetingDate", v)} required />
+                  )}
+                  {isMeetingRecurring && !computedMeetingAnchorDate && (
+                    <p className="text-[11px] text-red-600">반복 요일/규칙을 선택하면 첫 회차 날짜가 자동으로 채워집니다.</p>
+                  )}
                 </div>
-                <div className="space-y-1">
-                  <label className={labelClass}>시작 시간</label>
+              </FormRow>
+              <FormRow label="미팅 시간">
+                <div className="flex items-center gap-2">
                   <TimeSelect className={inputClass} value={input.meetingStartTime} onChange={(v) => set("meetingStartTime", v)} />
+                  <span className="shrink-0 text-navy-950/30">~</span>
+                  <TimeSelect className={inputClass} value={input.meetingEndTime} onChange={(v) => set("meetingEndTime", v)} />
                 </div>
-              </div>
-              <div className="space-y-1">
-                <label className={labelClass}>참석 부서</label>
-                <input className={inputClass} value={input.department} onChange={(e) => set("department", e.target.value)} />
-              </div>
-              <div className="space-y-1">
-                <label className={labelClass}>참석자</label>
-                <div className="max-h-32 space-y-1 overflow-y-auto rounded-md border border-navy-100 bg-white p-2">
-                  {users.map((u) => (
-                    <label key={u.id} className="flex items-center gap-2 text-xs">
-                      <input
-                        type="checkbox"
-                        checked={input.attendeeIds.includes(u.id)}
-                        onChange={() => set("attendeeIds", toggleId(input.attendeeIds, u.id))}
-                      />
-                      {u.name ?? u.email}
-                    </label>
-                  ))}
-                </div>
-              </div>
-              <div className="space-y-1">
-                <label className={labelClass}>장소</label>
-                <input className={inputClass} value={input.location} onChange={(e) => set("location", e.target.value)} />
-              </div>
-            </div>
+              </FormRow>
+            </>
           )}
 
           {input.category === TaskCategory.HALF_DAY && (
@@ -1027,7 +1125,7 @@ export function TaskDetailPanel({
           )}
 
           {!isMeeting && (
-            <FormRow label="일정">
+            <FormRow label="시작/마감일">
               <div className="flex items-center gap-2">
                 <DateTextInput
                   className={inputClass}
@@ -1077,14 +1175,98 @@ export function TaskDetailPanel({
             </FormRow>
           )}
 
+          {/* 4. 상태 */}
+          <SectionLabel>상태</SectionLabel>
+          <FormRow label="상태">
+            {isMeeting ? (
+              <div className="space-y-1">
+                <StatusSegmented
+                  value={displayedStatus}
+                  onChange={(v) => set("status", v)}
+                  options={taskStatusOptions}
+                  // 평소엔 예정/진행중/완료를 눌러도 이미 자동으로 보여주는
+                  // 값과 같아 의미가 없으니 잠근다 — 다만 "보류"처럼 예외로
+                  // 바꾼 뒤에는 다시 자동으로 되돌릴 방법이 있어야 하므로,
+                  // 그때는 셋 다 눌러 자동 관리로 복귀할 수 있게 풀어준다.
+                  lockedIds={meetingStatusIsException ? undefined : AUTO_MANAGED_MEETING_STATUS_IDS}
+                />
+                <p className="text-[11px] text-navy-950/40">
+                  {meetingStatusIsException
+                    ? "예외 상태로 직접 지정돼 자동 계산을 건너뜁니다. 예정/진행중/완료 중 하나를 누르면 자동 관리로 돌아갑니다."
+                    : "미팅 시작/종료 시각에 따라 자동 관리됩니다. 직접 개입이 필요하면 보류 등 다른 상태를 선택하세요."}
+                </p>
+              </div>
+            ) : (
+              <StatusSegmented value={input.status} onChange={(v) => set("status", v)} options={taskStatusOptions} />
+            )}
+          </FormRow>
+
+          {/* 5. 담당자 — 내 일정/공통/직접 지정(요청사항 2·3) */}
+          <SectionLabel>담당자</SectionLabel>
+          <FormRow label="담당">
+            <AssigneeModeSelector
+              mode={input.assigneeMode}
+              assigneeIds={input.assigneeIds}
+              currentUser={currentUser}
+              users={users}
+              onModeChange={(m) => {
+                set("assigneeMode", m);
+                if (m === "ME") set("assigneeIds", [currentUser.id]);
+                else if (m === "COMMON") set("assigneeIds", []);
+              }}
+              onAssigneeIdsChange={(ids) => set("assigneeIds", ids)}
+            />
+          </FormRow>
+
+          {/* 6. 반복 */}
+          <SectionLabel>반복</SectionLabel>
           {/* Step 5B-1(반복 일정) — 업무 구분(MEETING 포함)과 무관하게 공용으로
-              둔다. 위쪽 "일정"/"미팅 날짜" 중 어느 쪽이든 그 바로 아래 한 곳에서만
-              렌더한다(중복 렌더 방지). */}
-          <RecurrenceFields input={input} onChange={set} />
+              둔다. */}
+          <RecurrenceFields
+            input={input}
+            anchorDateStr={isMeeting ? input.meetingDate : input.startDate}
+            onChange={(key, value) => {
+              set(key, value);
+              // Step 5B-7 — 반복 규칙 자체를 이 세션에서 실제로 건드렸는지
+              // 추적한다(위 computedMeetingAnchorDate 계산 주석 참고). isMeeting이
+              // 아니어도 플래그를 켜서 나쁠 게 없다 — 그 값은 isMeetingRecurring이
+              // false일 때는 애초에 안 쓰인다.
+              if (RECURRENCE_FIELD_KEYS.has(key)) setRecurrenceTouched(true);
+            }}
+          />
           {mode === "edit" && input.recurrenceType !== "NONE" && (
             <p className="text-[11px] text-navy-950/40">
               이 반복 규칙을 수정하면 전체 반복 일정에 적용됩니다. 특정 회차만 따로 수정하는 기능은 아직 지원하지 않습니다.
             </p>
+          )}
+
+          {/* 7. 기타 세부정보 — MEETING 부가 정보(참석 부서/참석자/장소),
+              기존 메모(읽기 전용), 변경 이력(읽기 전용). */}
+          {(isMeeting || input.memo || (mode === "edit" && isRevisionEligible)) && <SectionLabel>기타 세부정보</SectionLabel>}
+
+          {isMeeting && (
+            <>
+              <FormRow label="참석 부서">
+                <input className={inputClass} value={input.department} onChange={(e) => set("department", e.target.value)} />
+              </FormRow>
+              <FormRow label="참석자">
+                <div className="max-h-32 space-y-1 overflow-y-auto rounded-md border border-navy-100 bg-white p-2">
+                  {users.map((u) => (
+                    <label key={u.id} className="flex items-center gap-2 text-xs">
+                      <input
+                        type="checkbox"
+                        checked={input.attendeeIds.includes(u.id)}
+                        onChange={() => set("attendeeIds", toggleId(input.attendeeIds, u.id))}
+                      />
+                      {u.name ?? u.email}
+                    </label>
+                  ))}
+                </div>
+              </FormRow>
+              <FormRow label="장소">
+                <input className={inputClass} value={input.location} onChange={(e) => set("location", e.target.value)} />
+              </FormRow>
+            </>
           )}
 
           {/* Task.memo(단순 textarea)는 Comment/Update 시스템으로 대체됐다. 실사용

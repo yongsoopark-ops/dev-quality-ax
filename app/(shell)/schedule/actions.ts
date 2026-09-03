@@ -4,13 +4,23 @@ import { revalidatePath } from "next/cache";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { invalidateCache } from "@/lib/cache/memoCache";
-import { PROJECT_CATEGORIES_CACHE_KEY } from "@/lib/schedule/constants";
-import { NotificationType, TaskCategory } from "@/app/generated/prisma/enums";
+import {
+  DEFAULT_PROJECT_CATEGORY_GROUP_ID,
+  PROJECT_CATEGORIES_CACHE_KEY,
+  PROJECT_CATEGORY_GROUPS_CACHE_KEY,
+  TASK_CATEGORY_KEY as TaskCategory,
+  TASK_CATEGORY_OPTIONS_CACHE_KEY,
+  TASK_STATUS_KEY as TaskStatus,
+  TASK_STATUS_OPTIONS_CACHE_KEY,
+} from "@/lib/schedule/constants";
+import { NotificationType } from "@/app/generated/prisma/enums";
 import { Prisma } from "@/app/generated/prisma/client";
 import { resolveMentionedUserIds } from "@/lib/schedule/mention";
 import { MONTHLY_WEEK_ORDINAL_OPTIONS, WEEKDAY_ORDER } from "@/lib/schedule/recurrence";
 import type {
+  ProjectCategoryGroupOption,
   ProjectCategoryOption,
+  ScheduleOptionInfo,
   TaskCommentInfo,
   TaskDetailInfo,
   TaskFormInput,
@@ -34,11 +44,28 @@ function assertCanModify(session: { user: { id: string; role: string } }, author
   return "본인이 작성했거나 관리자만 수정/삭제할 수 있습니다.";
 }
 
+/** Step 5B-4(사용자 정의 상태/업무구분 설정) — 이 설정은 전체 Schedule 화면에
+ * 영향을 주므로 lib/meetingTemplates/actions.ts의 requireAdmin과 동일한
+ * 패턴으로 ADMIN만 변경 가능하게 한다. Client가 role을 속일 수 없도록 항상
+ * 서버 Session에서 다시 확인한다. */
+function requireAdminRole(session: { user: { role: string } }): string | null {
+  if (session.user.role !== "ADMIN") return "관리자만 설정을 변경할 수 있습니다.";
+  return null;
+}
+
 function validate(input: TaskFormInput): string | null {
   if (!input.title.trim()) return "업무명을 입력해 주세요.";
 
   if (input.category === TaskCategory.MEETING) {
+    // Step 5B-7 — 반복(매주/매월)일 때는 Client가 반복 규칙으로 미리 계산한
+    // 값을 meetingDate에 채워 보낸다(RecurrenceFields 주석 참고) — 서버는
+    // "비어 있지 않은가"만 확인하면 되고, 그 값이 실제로 반복 요일/규칙과
+    // 맞는지까지 재검증하지는 않는다(Client 계산 로직을 신뢰 — 사용자가 직접
+    // 입력할 수 없는 값이라 조작 여지가 project startDate만큼 크지 않다).
     if (!input.meetingDate) return "미팅 날짜를 입력해 주세요.";
+    if (!input.meetingStartTime) return "시작 시간을 입력해 주세요.";
+    if (!input.meetingEndTime) return "종료 시간을 입력해 주세요.";
+    if (input.meetingEndTime <= input.meetingStartTime) return "종료 시간은 시작 시간보다 이후여야 합니다.";
   } else {
     if (!input.startDate || !input.dueDate) return "시작일/마감일을 입력해 주세요.";
     if (new Date(input.dueDate).getTime() < new Date(input.startDate).getTime()) {
@@ -55,7 +82,21 @@ function validate(input: TaskFormInput): string | null {
     return "오전/오후를 선택해 주세요.";
   }
 
+  // Step(담당자 UX 개선) — "직접 지정"은 최소 1명 선택해야 한다. "내 일정"/
+  // "공통"은 서버가 각각 로그인 사용자/빈 배열로 강제하므로 여기서 검증할
+  // 것이 없다.
+  if (input.assigneeMode === "CUSTOM" && input.assigneeIds.length === 0) {
+    return "담당자를 1명 이상 선택해 주세요.";
+  }
+
   // Step 5B-1(반복 일정) — recurrenceType이 NONE이면 검증할 것이 없다(기존과 동일).
+  // Step(반복 일정 UX 개선) — interval은 모든 반복 타입 공용으로 항상
+  // 양의 정수여야 한다.
+  if (input.recurrenceType !== "NONE") {
+    const interval = Number(input.recurrenceInterval);
+    if (!Number.isInteger(interval) || interval < 1) return "반복 간격은 1 이상의 정수여야 합니다.";
+  }
+
   if (input.recurrenceType === "WEEKLY") {
     if (input.recurrenceWeekdays.length === 0) return "반복 요일을 선택해 주세요.";
     if (!input.recurrenceWeekdays.every((w) => WEEKDAY_ORDER.includes(w))) {
@@ -73,10 +114,19 @@ function validate(input: TaskFormInput): string | null {
       return "매월 반복 방식을 선택해 주세요.";
     }
   }
-  if (input.recurrenceType !== "NONE" && input.recurrenceEndDate) {
-    const anchorDate = input.category === TaskCategory.MEETING ? input.meetingDate : input.startDate;
-    if (anchorDate && new Date(input.recurrenceEndDate).getTime() < new Date(anchorDate).getTime()) {
-      return "반복 종료일은 시작일보다 빠를 수 없습니다.";
+  // Step(반복 일정 UX 개선) — 종료 조건 3가지(종료일 지정/N회 반복/무한 반복)
+  // 중 선택한 한쪽만 검증한다. DAILY/YEARLY도 WEEKLY/MONTHLY와 동일하게
+  // 이 종료 조건 검증을 공유한다.
+  if (input.recurrenceType !== "NONE") {
+    if (input.recurrenceEndType === "DATE") {
+      if (!input.recurrenceEndDate) return "반복 종료일을 선택해 주세요.";
+      const anchorDate = input.category === TaskCategory.MEETING ? input.meetingDate : input.startDate;
+      if (anchorDate && new Date(input.recurrenceEndDate).getTime() < new Date(anchorDate).getTime()) {
+        return "반복 종료일은 시작일보다 빠를 수 없습니다.";
+      }
+    } else if (input.recurrenceEndType === "COUNT") {
+      const count = Number(input.recurrenceCount);
+      if (!Number.isInteger(count) || count < 1) return "반복 횟수는 1 이상의 정수여야 합니다.";
     }
   }
 
@@ -94,22 +144,32 @@ function buildBaseTaskData(input: TaskFormInput) {
 
   return {
     title: input.title.trim(),
-    category: input.category,
+    // Step 5B-4 — 진짜 값은 categoryOptionId/statusOptionId뿐이다. 레거시
+    // category/status enum 컬럼(nullable로 완화됨)에는 더 이상 쓰지 않는다 —
+    // 사용자가 새로 추가한 업무구분/상태는 애초에 대응하는 enum 값이 없다.
+    categoryOptionId: input.category,
     startDate: isMeeting ? meetingDate! : new Date(input.startDate),
     dueDate: isMeeting ? meetingDate! : new Date(input.dueDate),
-    status: input.status,
+    statusOptionId: input.status,
     memo: input.memo.trim() || null,
     goalName: input.category === TaskCategory.PERSONAL_GOAL ? input.goalName.trim() || null : null,
     halfDayPeriod: input.category === TaskCategory.HALF_DAY ? input.halfDayPeriod || null : null,
+    // Step(담당자 UX 개선) — "공통"을 고른 경우에만 true. "내 일정"/"직접
+    // 지정"은 항상 false(assignees로 실제 담당자를 표현하므로).
+    isCommonAssignee: input.assigneeMode === "COMMON",
     ...buildRecurrenceData(input),
   };
 }
 
 /**
  * Step 5B-1(반복 일정) — recurrenceType에 따라 관련 없는 필드는 항상 명시적으로
- * null/빈 배열로 비운다(goalName/halfDayPeriod와 같은 패턴). V1 UI는
- * recurrenceInterval을 항상 1로만 보내지만, 계산 로직(lib/schedule/recurrence.ts)은
- * 이미 일반적인 간격을 지원하므로 여기서 그대로 저장한다.
+ * null/빈 배열로 비운다(goalName/halfDayPeriod와 같은 패턴).
+ * Step(반복 일정 UX 개선) — interval을 더 이상 1로 고정하지 않고 input에서
+ * 그대로 읽는다(요청사항: 격주=WEEKLY+interval 2, 매일 N일마다 등 기존 interval
+ * 컬럼 재사용). 종료 조건도 "종료일/N회/무한" 3가지 중 recurrenceEndType이
+ * 가리키는 한쪽만 채우고 나머지는 항상 null로 비운다 — endDate와 count가
+ * 동시에 값을 갖는 경우는 절대 없다(lib/schedule/recurrence.ts의 count 계산이
+ * 이 불변조건을 전제로 한다).
  */
 function buildRecurrenceData(input: TaskFormInput) {
   if (input.recurrenceType === "NONE") {
@@ -122,13 +182,40 @@ function buildRecurrenceData(input: TaskFormInput) {
       recurrenceMonthlyWeekOrdinal: null,
       recurrenceMonthlyWeekday: null,
       recurrenceEndDate: null,
+      recurrenceCount: null,
     };
   }
 
+  const interval = Math.max(1, Math.floor(Number(input.recurrenceInterval)) || 1);
   const shared = {
-    recurrenceInterval: 1,
-    recurrenceEndDate: input.recurrenceEndDate ? new Date(input.recurrenceEndDate) : null,
+    recurrenceInterval: interval,
+    recurrenceEndDate: input.recurrenceEndType === "DATE" && input.recurrenceEndDate ? new Date(input.recurrenceEndDate) : null,
+    recurrenceCount: input.recurrenceEndType === "COUNT" && input.recurrenceCount ? Number(input.recurrenceCount) : null,
   };
+
+  if (input.recurrenceType === "DAILY") {
+    return {
+      recurrenceType: "DAILY" as const,
+      ...shared,
+      recurrenceWeekdays: [],
+      recurrenceMonthlyRuleType: null,
+      recurrenceMonthDay: null,
+      recurrenceMonthlyWeekOrdinal: null,
+      recurrenceMonthlyWeekday: null,
+    };
+  }
+
+  if (input.recurrenceType === "YEARLY") {
+    return {
+      recurrenceType: "YEARLY" as const,
+      ...shared,
+      recurrenceWeekdays: [],
+      recurrenceMonthlyRuleType: null,
+      recurrenceMonthDay: null,
+      recurrenceMonthlyWeekOrdinal: null,
+      recurrenceMonthlyWeekday: null,
+    };
+  }
 
   if (input.recurrenceType === "WEEKLY") {
     return {
@@ -173,6 +260,15 @@ function combineMeetingDateTime(input: TaskFormInput): Date | null {
   return new Date(`${input.meetingDate}T${input.meetingStartTime || "00:00"}`);
 }
 
+/** Step 5B-7(시작/종료시간) — endTime도 같은 날짜(meetingDate) + meetingEndTime을
+ * 결합한다. "동일 날짜 내 미팅을 V1 기준으로 한다"(요청사항)라 자정을 넘기는
+ * 경우는 다루지 않는다 — validate()가 이미 종료 시간 > 시작 시간을 문자열
+ * 비교로 검증하므로 여기서 다시 확인하지 않는다. */
+function combineMeetingEndDateTime(input: TaskFormInput): Date | null {
+  if (!input.meetingDate || !input.meetingEndTime) return null;
+  return new Date(`${input.meetingDate}T${input.meetingEndTime}`);
+}
+
 /**
  * category에 따라 필요 없는 조건부 Detail은 명시적으로 지운다(요청사항: 업무
  * 구분과 무관한 조건부 값은 저장하지 않음). TaskMeetingDetail 삭제는 Schema의
@@ -197,17 +293,20 @@ async function syncTaskDetails(tx: Prisma.TransactionClient, taskId: string, inp
   } else if (input.category === TaskCategory.MEETING) {
     await tx.taskProjectDetail.deleteMany({ where: { taskId } });
     const meetingTime = combineMeetingDateTime(input);
+    const meetingEndTime = combineMeetingEndDateTime(input);
     await tx.taskMeetingDetail.upsert({
       where: { taskId },
       update: {
         department: input.department.trim() || null,
         time: meetingTime,
+        endTime: meetingEndTime,
         location: input.location.trim() || null,
       },
       create: {
         taskId,
         department: input.department.trim() || null,
         time: meetingTime,
+        endTime: meetingEndTime,
         location: input.location.trim() || null,
       },
     });
@@ -228,6 +327,20 @@ async function syncTaskDetails(tx: Prisma.TransactionClient, taskId: string, inp
  * User를 서버에서 그대로 유일한 TaskAssignee로 등록한다. Client는 userId를
  * 절대 넘기지 않으며, 여기서 현재 User가 ACTIVE 상태인지도 함께 검증한다.
  */
+/**
+ * Step(담당자 UX 개선) — assigneeMode에 따라 실제 저장할 담당자 목록을
+ * 결정한다. "내 일정"은 Client가 currentUserId를 안 보내도(혹은 보내도)
+ * 항상 서버가 로그인 사용자로 강제한다 — Client 조작으로 다른 사람을 "내
+ * 일정"으로 등록할 수 없다. "공통"은 항상 빈 배열(TaskAssignee 없음,
+ * isCommonAssignee=true가 buildBaseTaskData에서 이미 채워진다). "직접
+ * 지정"은 validate()가 이미 1명 이상을 보장한 input.assigneeIds 그대로 쓴다.
+ */
+function resolveAssigneeUserIds(input: TaskFormInput, currentUserId: string): string[] {
+  if (input.assigneeMode === "ME") return [currentUserId];
+  if (input.assigneeMode === "COMMON") return [];
+  return input.assigneeIds;
+}
+
 export async function createTaskAction(input: TaskFormInput): Promise<{ ok?: true; error?: string }> {
   const session = await requireUser();
   if (session.user.status !== "ACTIVE") {
@@ -237,14 +350,18 @@ export async function createTaskAction(input: TaskFormInput): Promise<{ ok?: tru
   const validationError = validate(input);
   if (validationError) return { error: validationError };
 
+  const assigneeUserIds = resolveAssigneeUserIds(input, session.user.id);
+
   await prisma.$transaction(async (tx) => {
     const task = await tx.task.create({
       data: { ...buildBaseTaskData(input), createdBy: session.user.id },
     });
 
-    await tx.taskAssignee.create({
-      data: { taskId: task.id, userId: session.user.id },
-    });
+    if (assigneeUserIds.length > 0) {
+      await tx.taskAssignee.createMany({
+        data: assigneeUserIds.map((userId) => ({ taskId: task.id, userId })),
+      });
+    }
 
     await syncTaskDetails(tx, task.id, input);
   });
@@ -253,18 +370,32 @@ export async function createTaskAction(input: TaskFormInput): Promise<{ ok?: tru
   return { ok: true };
 }
 
-/** 담당자 변경 기능은 이번 Step에서 다루지 않는다 — 기존 TaskAssignee는 건드리지 않는다. */
+/**
+ * Step(담당자 UX 개선) — 이전 Step까지는 담당자 변경을 다루지 않았지만
+ * (기존 TaskAssignee를 그대로 보존), 이번 Step은 "직접 지정" 화면에서 실제로
+ * 담당자를 바꿀 수 있어야 하므로 attendeeIds(참석자) 동기화와 같은 패턴
+ * (deleteMany + createMany)으로 TaskAssignee를 새로 맞춘다. "내 일정"으로
+ * 바꿔도 로그인 사용자로 덮어쓸 뿐 임의의 다른 사람으로는 절대 바뀌지 않는다.
+ */
 export async function updateTaskAction(
   taskId: string,
   input: TaskFormInput,
 ): Promise<{ ok?: true; error?: string }> {
-  await requireUser();
+  const session = await requireUser();
 
   const validationError = validate(input);
   if (validationError) return { error: validationError };
 
+  const assigneeUserIds = resolveAssigneeUserIds(input, session.user.id);
+
   await prisma.$transaction(async (tx) => {
     await tx.task.update({ where: { id: taskId }, data: buildBaseTaskData(input) });
+    await tx.taskAssignee.deleteMany({ where: { taskId } });
+    if (assigneeUserIds.length > 0) {
+      await tx.taskAssignee.createMany({
+        data: assigneeUserIds.map((userId) => ({ taskId, userId })),
+      });
+    }
     await syncTaskDetails(tx, taskId, input);
   });
 
@@ -306,7 +437,7 @@ export async function updateTaskDatesAction(
   });
   if (!task) return { error: "업무를 찾을 수 없습니다." };
 
-  const isSingleDayOnly = task.category === TaskCategory.MEETING || task.category === TaskCategory.HALF_DAY;
+  const isSingleDayOnly = task.categoryOptionId === TaskCategory.MEETING || task.categoryOptionId === TaskCategory.HALF_DAY;
   const newStart = new Date(startDate);
   const newDue = isSingleDayOnly ? newStart : new Date(dueDate);
   if (newDue.getTime() < newStart.getTime()) {
@@ -325,11 +456,20 @@ export async function updateTaskDatesAction(
       await tx.task.update({ where: { id: taskId }, data: { startDate: newStart, dueDate: newDue } });
     }
 
-    if (task.category === TaskCategory.MEETING && task.meetingDetail?.time) {
+    if (task.categoryOptionId === TaskCategory.MEETING && task.meetingDetail?.time) {
       const oldTime = task.meetingDetail.time;
       const newTime = new Date(newStart);
       newTime.setHours(oldTime.getHours(), oldTime.getMinutes(), 0, 0);
-      await tx.taskMeetingDetail.update({ where: { taskId }, data: { time: newTime } });
+      // Step 5B-7 — endTime도 같은 날짜로 함께 옮긴다. 시:분은 그대로 두고
+      // 날짜만 바뀌므로 시작~종료 길이는 항상 보존된다.
+      const data: { time: Date; endTime?: Date } = { time: newTime };
+      if (task.meetingDetail.endTime) {
+        const oldEndTime = task.meetingDetail.endTime;
+        const newEndTime = new Date(newStart);
+        newEndTime.setHours(oldEndTime.getHours(), oldEndTime.getMinutes(), 0, 0);
+        data.endTime = newEndTime;
+      }
+      await tx.taskMeetingDetail.update({ where: { taskId }, data });
     }
   });
 
@@ -381,7 +521,7 @@ export async function addTaskScheduleRevisionAction(
         include: { scheduleRevisions: { orderBy: { revisionNo: "desc" }, take: 1 } },
       });
       if (!task) throw new Error("업무를 찾을 수 없습니다.");
-      if (task.category === TaskCategory.MEETING || task.category === TaskCategory.HALF_DAY) {
+      if (task.categoryOptionId === TaskCategory.MEETING || task.categoryOptionId === TaskCategory.HALF_DAY) {
         throw new Error("미팅/반차 업무는 공식 일정 변경 이력을 지원하지 않습니다.");
       }
 
@@ -776,6 +916,7 @@ export async function getTaskDetailAction(taskId: string): Promise<{ detail?: Ta
         ? {
             department: task.meetingDetail.department,
             time: task.meetingDetail.time ? task.meetingDetail.time.toISOString() : null,
+            endTime: task.meetingDetail.endTime ? task.meetingDetail.endTime.toISOString() : null,
             location: task.meetingDetail.location,
             attendeeIds: task.meetingDetail.attendees.map((a) => a.userId),
           }
@@ -807,20 +948,29 @@ export async function deleteTaskAction(taskId: string): Promise<{ ok?: true; err
 }
 
 // ---------------- 프로젝트 카테고리(ProjectCategory) 관리 ----------------
-// 별도 화면 없이 Task Form 안에서 바로 추가/삭제한다 — 사용자 화면에서 관리
-// 가능해야 하고 불필요한 새 Route/마스터 관리 UI를 따로 만들 필요가 없어서다.
+// Step 5B-5(2단계 계층화)부터 "일정 설정 > 프로젝트 카테고리 관리"(ADMIN
+// 전용)로 관리 창구가 옮겨갔다 — Task Form 안에 있던 인라인 "카테고리 관리"
+// 빠른 추가/삭제 UI는 대분류를 고르지 않고는 의미가 없어 제거했다(요청사항:
+// 대분류→중분류 2단계 선택 UX로 교체). 그래서 이 아래 create/remove/toggle도
+// 이제부터는 ADMIN만 호출할 수 있게 막는다 — UI에서만 버튼을 숨기고 서버
+// Action 자체는 열려 있으면 의미가 없기 때문이다.
 
 export async function createProjectCategoryAction(
   name: string,
+  groupId: string,
 ): Promise<{ category?: ProjectCategoryOption; error?: string }> {
-  await requireUser();
+  const session = await requireUser();
+  const permissionError = requireAdminRole(session);
+  if (permissionError) return { error: permissionError };
+
   const trimmed = name.trim();
   if (!trimmed) return { error: "카테고리명을 입력해 주세요." };
+  if (!groupId) return { error: "대분류를 선택해 주세요." };
 
   const existing = await prisma.projectCategory.findUnique({ where: { name: trimmed } });
   if (existing) {
     if (!existing.active) {
-      const reactivated = await prisma.projectCategory.update({ where: { id: existing.id }, data: { active: true } });
+      const reactivated = await prisma.projectCategory.update({ where: { id: existing.id }, data: { active: true, groupId } });
       invalidateCache(PROJECT_CATEGORIES_CACHE_KEY);
       revalidatePath("/schedule");
       return { category: reactivated };
@@ -828,17 +978,23 @@ export async function createProjectCategoryAction(
     return { error: "이미 존재하는 카테고리명입니다." };
   }
 
-  const category = await prisma.projectCategory.create({ data: { name: trimmed } });
-  invalidateCache(PROJECT_CATEGORIES_CACHE_KEY);
-  revalidatePath("/schedule");
-  return { category };
+  try {
+    const category = await prisma.projectCategory.create({ data: { name: trimmed, groupId } });
+    invalidateCache(PROJECT_CATEGORIES_CACHE_KEY);
+    revalidatePath("/schedule");
+    return { category };
+  } catch {
+    return { error: "카테고리를 추가하지 못했습니다. 대분류를 다시 확인해 주세요." };
+  }
 }
 
 /** 사용 이력(TaskProjectDetail 참조)이 있으면 삭제 대신 비활성화한다. */
 export async function removeProjectCategoryAction(
   id: string,
 ): Promise<{ ok?: true; deactivated?: true; error?: string }> {
-  await requireUser();
+  const session = await requireUser();
+  const permissionError = requireAdminRole(session);
+  if (permissionError) return { error: permissionError };
 
   const usageCount = await prisma.taskProjectDetail.count({ where: { categoryId: id } });
   if (usageCount > 0) {
@@ -858,9 +1014,400 @@ export async function toggleProjectCategoryActiveAction(
   id: string,
   active: boolean,
 ): Promise<{ ok?: true; error?: string }> {
-  await requireUser();
+  const session = await requireUser();
+  const permissionError = requireAdminRole(session);
+  if (permissionError) return { error: permissionError };
+
   await prisma.projectCategory.update({ where: { id }, data: { active } });
   invalidateCache(PROJECT_CATEGORIES_CACHE_KEY);
+  revalidatePath("/schedule");
+  return { ok: true };
+}
+
+export async function updateProjectCategoryAction(
+  id: string,
+  patch: { name?: string; color?: string },
+): Promise<{ category?: ProjectCategoryOption; error?: string }> {
+  const session = await requireUser();
+  const permissionError = requireAdminRole(session);
+  if (permissionError) return { error: permissionError };
+
+  const data: { name?: string; color?: string } = {};
+  if (patch.name !== undefined) {
+    const trimmed = patch.name.trim();
+    if (!trimmed) return { error: "카테고리명을 입력해 주세요." };
+    data.name = trimmed;
+  }
+  if (patch.color !== undefined) data.color = patch.color;
+
+  try {
+    const updated = await prisma.projectCategory.update({ where: { id }, data });
+    invalidateCache(PROJECT_CATEGORIES_CACHE_KEY);
+    revalidatePath("/schedule");
+    return { category: updated };
+  } catch {
+    return { error: "카테고리를 수정하지 못했습니다. 같은 이름이 이미 있는지 확인해 주세요." };
+  }
+}
+
+/** Step 5B-5(2단계 계층화) — "다른 대분류로 이동"(요청사항). 이름/색상과
+ * 독립된 별도 Action으로 둔 이유는 설정 화면에서 "이 중분류를 다른 그룹
+ * 아래로 Drag" 같은 동작과 rename/색상 변경 흐름을 섞지 않기 위함이다. */
+export async function moveProjectCategoryToGroupAction(id: string, groupId: string): Promise<{ category?: ProjectCategoryOption; error?: string }> {
+  const session = await requireUser();
+  const permissionError = requireAdminRole(session);
+  if (permissionError) return { error: permissionError };
+  if (!groupId) return { error: "대분류를 선택해 주세요." };
+
+  try {
+    const updated = await prisma.projectCategory.update({ where: { id }, data: { groupId } });
+    invalidateCache(PROJECT_CATEGORIES_CACHE_KEY);
+    revalidatePath("/schedule");
+    return { category: updated };
+  } catch {
+    return { error: "대분류를 변경하지 못했습니다." };
+  }
+}
+
+/** orderedIds 배열의 순서를 그대로 order(0부터)에 반영한다 — Drag & Drop
+ * 결과를 한 번에 저장하는 용도라 항목별 순서를 계산할 필요가 없다. 같은
+ * 대분류 안의 중분류끼리만 순서를 바꾸므로 orderedIds는 항상 그 그룹의
+ * 중분류 id 목록이다. */
+export async function reorderProjectCategoriesAction(orderedIds: string[]): Promise<{ ok?: true; error?: string }> {
+  const session = await requireUser();
+  const permissionError = requireAdminRole(session);
+  if (permissionError) return { error: permissionError };
+
+  await prisma.$transaction(orderedIds.map((id, order) => prisma.projectCategory.update({ where: { id }, data: { order } })));
+  invalidateCache(PROJECT_CATEGORIES_CACHE_KEY);
+  revalidatePath("/schedule");
+  return { ok: true };
+}
+
+// ---------------- 프로젝트 카테고리 대분류(ProjectCategoryGroup) 관리 ----------------
+// Step 5B-6(대분류 삭제 기능 보완) — 5B-5에서는 삭제를 지원하지 않았지만,
+// 테스트용/불필요한 대분류를 정리할 수 있어야 한다는 요청으로 "하위 중분류가
+// 0개인 대분류만" 삭제를 허용한다. 하위 중분류가 있으면 삭제 자체를 거부하고
+// (FK 제약상 실패하기도 하지만, Client가 상황을 정확히 안내할 수 있도록 서버가
+// 먼저 개수를 세어 명시적으로 막는다) 시스템 기본 대분류 "미분류"는 삭제뿐
+// 아니라 비활성화도 금지한다 — 그룹 없는 카테고리가 생기지 않을 안전한
+// 임시 소속지가 항상 하나는 남아 있어야 하기 때문이다.
+
+function toProjectCategoryGroupInfo(row: { id: string; name: string; order: number; active: boolean }): ProjectCategoryGroupOption {
+  return { id: row.id, name: row.name, order: row.order, active: row.active };
+}
+
+export async function createProjectCategoryGroupAction(name: string): Promise<{ group?: ProjectCategoryGroupOption; error?: string }> {
+  const session = await requireUser();
+  const permissionError = requireAdminRole(session);
+  if (permissionError) return { error: permissionError };
+
+  const trimmed = name.trim();
+  if (!trimmed) return { error: "대분류 이름을 입력해 주세요." };
+
+  try {
+    const maxOrder = await prisma.projectCategoryGroup.aggregate({ _max: { order: true } });
+    const created = await prisma.projectCategoryGroup.create({ data: { name: trimmed, order: (maxOrder._max.order ?? -1) + 1 } });
+    invalidateCache(PROJECT_CATEGORY_GROUPS_CACHE_KEY);
+    revalidatePath("/schedule");
+    return { group: toProjectCategoryGroupInfo(created) };
+  } catch {
+    return { error: "대분류를 추가하지 못했습니다. 같은 이름이 이미 있는지 확인해 주세요." };
+  }
+}
+
+export async function updateProjectCategoryGroupAction(id: string, name: string): Promise<{ group?: ProjectCategoryGroupOption; error?: string }> {
+  const session = await requireUser();
+  const permissionError = requireAdminRole(session);
+  if (permissionError) return { error: permissionError };
+
+  const trimmed = name.trim();
+  if (!trimmed) return { error: "대분류 이름을 입력해 주세요." };
+
+  try {
+    const updated = await prisma.projectCategoryGroup.update({ where: { id }, data: { name: trimmed } });
+    invalidateCache(PROJECT_CATEGORY_GROUPS_CACHE_KEY);
+    revalidatePath("/schedule");
+    return { group: toProjectCategoryGroupInfo(updated) };
+  } catch {
+    return { error: "대분류 이름을 수정하지 못했습니다. 같은 이름이 이미 있는지 확인해 주세요." };
+  }
+}
+
+export async function reorderProjectCategoryGroupsAction(orderedIds: string[]): Promise<{ ok?: true; error?: string }> {
+  const session = await requireUser();
+  const permissionError = requireAdminRole(session);
+  if (permissionError) return { error: permissionError };
+
+  await prisma.$transaction(orderedIds.map((id, order) => prisma.projectCategoryGroup.update({ where: { id }, data: { order } })));
+  invalidateCache(PROJECT_CATEGORY_GROUPS_CACHE_KEY);
+  revalidatePath("/schedule");
+  return { ok: true };
+}
+
+export async function setProjectCategoryGroupActiveAction(id: string, active: boolean): Promise<{ ok?: true; error?: string }> {
+  const session = await requireUser();
+  const permissionError = requireAdminRole(session);
+  if (permissionError) return { error: permissionError };
+
+  if (id === DEFAULT_PROJECT_CATEGORY_GROUP_ID) return { error: "미분류는 비활성화할 수 없습니다." };
+
+  await prisma.projectCategoryGroup.update({ where: { id }, data: { active } });
+  invalidateCache(PROJECT_CATEGORY_GROUPS_CACHE_KEY);
+  revalidatePath("/schedule");
+  return { ok: true };
+}
+
+export async function deleteProjectCategoryGroupAction(id: string): Promise<{ ok?: true; error?: string }> {
+  const session = await requireUser();
+  const permissionError = requireAdminRole(session);
+  if (permissionError) return { error: permissionError };
+
+  if (id === DEFAULT_PROJECT_CATEGORY_GROUP_ID) return { error: "미분류는 삭제할 수 없습니다." };
+
+  // Client의 "하위 중분류 0개" 판단만 믿지 않는다 — 서버에서 다시 실제 개수를
+  // 센다(그 사이 다른 관리자가 중분류를 추가했을 수도 있다).
+  const group = await prisma.projectCategoryGroup.findUnique({ where: { id }, select: { id: true } });
+  if (!group) return { error: "이미 삭제된 대분류입니다." };
+
+  const childCount = await prisma.projectCategory.count({ where: { groupId: id } });
+  if (childCount > 0) {
+    return { error: "하위 카테고리를 다른 대분류로 이동하거나 삭제한 후 다시 시도해 주세요." };
+  }
+
+  try {
+    await prisma.projectCategoryGroup.delete({ where: { id } });
+  } catch {
+    // 두 요청이 동시에 들어와 방금 막 하위 카테고리가 추가된 경우 등 —
+    // count 확인 이후에도 FK 제약이 최후의 안전망 역할을 한다.
+    return { error: "하위 카테고리를 다른 대분류로 이동하거나 삭제한 후 다시 시도해 주세요." };
+  }
+
+  invalidateCache(PROJECT_CATEGORY_GROUPS_CACHE_KEY);
+  revalidatePath("/schedule");
+  return { ok: true };
+}
+
+// ---------------- 업무 구분(TaskCategoryOption) 설정 ----------------
+// Step 5B-4 — "일정 설정" 화면(ADMIN 전용)에서 관리한다. 시스템 예약 7종
+// (PROJECT 등)은 id가 고정 문자열이라 삭제하면 그 id를 참조하는 입력폼/
+// 자동화가 전부 깨진다 — 그래서 시스템 예약 항목은 비활성화만 지원한다
+// (요청사항: "시스템 핵심 유형을 완전히 삭제해서 기존 기능이 깨지는 구조는
+// 금지"). 사용자가 새로 추가하는 업무구분은 cuid id를 받아 어떤 코드도 특별
+// 취급하지 않으므로 자동으로 "일반(GENERIC)" 동작이 된다 — Step 5B-8부터는
+// 이런 사용자 정의(CUSTOM) 항목에 한해 "참조 중인 Task가 0개면 실제 삭제"를
+// 지원한다(TASK_CATEGORY_RESERVED_IDS 참고).
+
+/** 시스템이 semantic key로 의존하는 예약 7종 — TASK_CATEGORY_KEY 객체의 값을
+ * 그대로 가져와 하드코딩 목록을 따로 만들지 않는다(요청사항: "임의로 새 key를
+ * 만들지 말 것" — 실제 코드가 의존하는 값과 항상 정확히 같은 목록이어야 한다). */
+const TASK_CATEGORY_RESERVED_IDS: readonly string[] = Object.values(TaskCategory);
+/** TASK_STATUS_KEY 4종 — isTaskOverdue 등이 의존한다. */
+const TASK_STATUS_RESERVED_IDS: readonly string[] = Object.values(TaskStatus);
+
+function toScheduleOptionInfo(row: { id: string; label: string; color: string; order: number; active: boolean }): ScheduleOptionInfo {
+  return { id: row.id, label: row.label, color: row.color, order: row.order, active: row.active };
+}
+
+export async function createTaskCategoryOptionAction(
+  label: string,
+  color: string,
+): Promise<{ option?: ScheduleOptionInfo; error?: string }> {
+  const session = await requireUser();
+  const permissionError = requireAdminRole(session);
+  if (permissionError) return { error: permissionError };
+
+  const trimmed = label.trim();
+  if (!trimmed) return { error: "업무 구분 이름을 입력해 주세요." };
+
+  const maxOrder = await prisma.taskCategoryOption.aggregate({ _max: { order: true } });
+  const created = await prisma.taskCategoryOption.create({
+    data: { label: trimmed, color, order: (maxOrder._max.order ?? -1) + 1 },
+  });
+  invalidateCache(TASK_CATEGORY_OPTIONS_CACHE_KEY);
+  revalidatePath("/schedule");
+  return { option: toScheduleOptionInfo(created) };
+}
+
+/** label/color만 바꿀 수 있다 — id(시스템 예약 key 포함)는 절대 바뀌지 않는다
+ * (요청사항: 표시 이름을 바꿔도 기존 일정 연결이 깨지지 않아야 한다). */
+export async function updateTaskCategoryOptionAction(
+  id: string,
+  patch: { label?: string; color?: string },
+): Promise<{ option?: ScheduleOptionInfo; error?: string }> {
+  const session = await requireUser();
+  const permissionError = requireAdminRole(session);
+  if (permissionError) return { error: permissionError };
+
+  const data: { label?: string; color?: string } = {};
+  if (patch.label !== undefined) {
+    const trimmed = patch.label.trim();
+    if (!trimmed) return { error: "업무 구분 이름을 입력해 주세요." };
+    data.label = trimmed;
+  }
+  if (patch.color !== undefined) data.color = patch.color;
+
+  const updated = await prisma.taskCategoryOption.update({ where: { id }, data });
+  invalidateCache(TASK_CATEGORY_OPTIONS_CACHE_KEY);
+  revalidatePath("/schedule");
+  return { option: toScheduleOptionInfo(updated) };
+}
+
+export async function reorderTaskCategoryOptionsAction(orderedIds: string[]): Promise<{ ok?: true; error?: string }> {
+  const session = await requireUser();
+  const permissionError = requireAdminRole(session);
+  if (permissionError) return { error: permissionError };
+
+  await prisma.$transaction(orderedIds.map((id, order) => prisma.taskCategoryOption.update({ where: { id }, data: { order } })));
+  invalidateCache(TASK_CATEGORY_OPTIONS_CACHE_KEY);
+  revalidatePath("/schedule");
+  return { ok: true };
+}
+
+/** 비활성화만 지원한다(삭제 없음) — 사용 중이든 아니든 항상 안전하다. 비활성
+ * 옵션은 새 일정 등록 dropdown에서만 숨겨지고, 이미 그 업무구분으로 저장된
+ * Task는 계속 정상 표시/편집된다(Client가 "현재 선택된 값은 항상 목록에
+ * 포함" 규칙으로 처리 — TaskDetailPanel.tsx CategorySelect 참고). */
+export async function setTaskCategoryOptionActiveAction(id: string, active: boolean): Promise<{ ok?: true; error?: string }> {
+  const session = await requireUser();
+  const permissionError = requireAdminRole(session);
+  if (permissionError) return { error: permissionError };
+
+  await prisma.taskCategoryOption.update({ where: { id }, data: { active } });
+  invalidateCache(TASK_CATEGORY_OPTIONS_CACHE_KEY);
+  revalidatePath("/schedule");
+  return { ok: true };
+}
+
+/**
+ * Step 5B-8 — 사용자 정의(CUSTOM) 업무구분만 실제 삭제를 지원한다. Client가
+ * "사용 중이 아니다"라고 판단해 이 Action을 불러도, 그 사이 다른 사용자가
+ * 그 업무구분으로 Task를 새로 만들었을 수 있으므로 여기서 Task 참조 개수를
+ * 다시 센다(Client 조건만 믿지 않음).
+ */
+export async function deleteTaskCategoryOptionAction(id: string): Promise<{ ok?: true; error?: string }> {
+  const session = await requireUser();
+  const permissionError = requireAdminRole(session);
+  if (permissionError) return { error: permissionError };
+
+  if (TASK_CATEGORY_RESERVED_IDS.includes(id)) {
+    return { error: "시스템 업무구분은 삭제할 수 없습니다." };
+  }
+
+  const option = await prisma.taskCategoryOption.findUnique({ where: { id }, select: { id: true } });
+  if (!option) return { error: "이미 삭제된 업무구분입니다." };
+
+  const usedCount = await prisma.task.count({ where: { categoryOptionId: id } });
+  if (usedCount > 0) {
+    return { error: "이 항목을 사용 중인 일정이 있어 삭제할 수 없습니다. 기존 일정을 다른 항목으로 변경한 후 다시 시도해 주세요." };
+  }
+
+  try {
+    await prisma.taskCategoryOption.delete({ where: { id } });
+  } catch {
+    return { error: "이 항목을 사용 중인 일정이 있어 삭제할 수 없습니다. 기존 일정을 다른 항목으로 변경한 후 다시 시도해 주세요." };
+  }
+
+  invalidateCache(TASK_CATEGORY_OPTIONS_CACHE_KEY);
+  revalidatePath("/schedule");
+  return { ok: true };
+}
+
+// ---------------- 상태(TaskStatusOption) 설정 ----------------
+// TaskCategoryOption과 완전히 동일한 정책 — 시스템 예약 4종("DONE"은 특히
+// isTaskOverdue/getEffectiveTaskStatus가 신뢰하는 key)은 비활성화만, 사용자가
+// 추가한 CUSTOM 상태는 미사용 시 실제 삭제를 지원한다(Step 5B-8).
+
+export async function createTaskStatusOptionAction(
+  label: string,
+  color: string,
+): Promise<{ option?: ScheduleOptionInfo; error?: string }> {
+  const session = await requireUser();
+  const permissionError = requireAdminRole(session);
+  if (permissionError) return { error: permissionError };
+
+  const trimmed = label.trim();
+  if (!trimmed) return { error: "상태 이름을 입력해 주세요." };
+
+  const maxOrder = await prisma.taskStatusOption.aggregate({ _max: { order: true } });
+  const created = await prisma.taskStatusOption.create({
+    data: { label: trimmed, color, order: (maxOrder._max.order ?? -1) + 1 },
+  });
+  invalidateCache(TASK_STATUS_OPTIONS_CACHE_KEY);
+  revalidatePath("/schedule");
+  return { option: toScheduleOptionInfo(created) };
+}
+
+export async function updateTaskStatusOptionAction(
+  id: string,
+  patch: { label?: string; color?: string },
+): Promise<{ option?: ScheduleOptionInfo; error?: string }> {
+  const session = await requireUser();
+  const permissionError = requireAdminRole(session);
+  if (permissionError) return { error: permissionError };
+
+  const data: { label?: string; color?: string } = {};
+  if (patch.label !== undefined) {
+    const trimmed = patch.label.trim();
+    if (!trimmed) return { error: "상태 이름을 입력해 주세요." };
+    data.label = trimmed;
+  }
+  if (patch.color !== undefined) data.color = patch.color;
+
+  const updated = await prisma.taskStatusOption.update({ where: { id }, data });
+  invalidateCache(TASK_STATUS_OPTIONS_CACHE_KEY);
+  revalidatePath("/schedule");
+  return { option: toScheduleOptionInfo(updated) };
+}
+
+export async function reorderTaskStatusOptionsAction(orderedIds: string[]): Promise<{ ok?: true; error?: string }> {
+  const session = await requireUser();
+  const permissionError = requireAdminRole(session);
+  if (permissionError) return { error: permissionError };
+
+  await prisma.$transaction(orderedIds.map((id, order) => prisma.taskStatusOption.update({ where: { id }, data: { order } })));
+  invalidateCache(TASK_STATUS_OPTIONS_CACHE_KEY);
+  revalidatePath("/schedule");
+  return { ok: true };
+}
+
+export async function setTaskStatusOptionActiveAction(id: string, active: boolean): Promise<{ ok?: true; error?: string }> {
+  const session = await requireUser();
+  const permissionError = requireAdminRole(session);
+  if (permissionError) return { error: permissionError };
+
+  await prisma.taskStatusOption.update({ where: { id }, data: { active } });
+  invalidateCache(TASK_STATUS_OPTIONS_CACHE_KEY);
+  revalidatePath("/schedule");
+  return { ok: true };
+}
+
+/** Step 5B-8 — deleteTaskCategoryOptionAction과 동일한 정책/순서
+ * (존재 확인 → 시스템 예약 여부 → 참조 개수 재확인 → 삭제). */
+export async function deleteTaskStatusOptionAction(id: string): Promise<{ ok?: true; error?: string }> {
+  const session = await requireUser();
+  const permissionError = requireAdminRole(session);
+  if (permissionError) return { error: permissionError };
+
+  if (TASK_STATUS_RESERVED_IDS.includes(id)) {
+    return { error: "시스템 상태는 삭제할 수 없습니다." };
+  }
+
+  const option = await prisma.taskStatusOption.findUnique({ where: { id }, select: { id: true } });
+  if (!option) return { error: "이미 삭제된 상태입니다." };
+
+  const usedCount = await prisma.task.count({ where: { statusOptionId: id } });
+  if (usedCount > 0) {
+    return { error: "이 항목을 사용 중인 일정이 있어 삭제할 수 없습니다. 기존 일정을 다른 항목으로 변경한 후 다시 시도해 주세요." };
+  }
+
+  try {
+    await prisma.taskStatusOption.delete({ where: { id } });
+  } catch {
+    return { error: "이 항목을 사용 중인 일정이 있어 삭제할 수 없습니다. 기존 일정을 다른 항목으로 변경한 후 다시 시도해 주세요." };
+  }
+
+  invalidateCache(TASK_STATUS_OPTIONS_CACHE_KEY);
   revalidatePath("/schedule");
   return { ok: true };
 }

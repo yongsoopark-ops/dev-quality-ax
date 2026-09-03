@@ -36,7 +36,9 @@ export const MONTHLY_WEEK_ORDINAL_LABELS: Record<number, string> = {
 
 export interface RecurrenceRule {
   type: RecurrenceType;
-  /** 2면 "격주"/"격월". V1 UI는 항상 1만 노출한다. */
+  /** 2면 "격주"/"격월"/"이틀마다"/"2년마다" 등. DAILY/WEEKLY/MONTHLY/YEARLY
+   * 전부 이 하나의 필드를 공유한다(요청사항: "격주를 별도 recurrence type으로
+   * 만들지 말고 기존 interval 방식 재사용"). */
   interval: number;
   /** WEEKLY 전용. */
   weekdays: Weekday[];
@@ -48,8 +50,14 @@ export interface RecurrenceRule {
   monthlyWeekOrdinal: number | null;
   /** MONTHLY + NTH_WEEKDAY 전용. */
   monthlyWeekday: Weekday | null;
-  /** null이면 종료일 없음(무기한 반복). */
+  /** null이면 종료일 없음. count와 동시에 값을 갖지 않는다(서버가 저장 시
+   * 항상 한쪽만 채운다 — buildRecurrenceData 참고). */
   endDate: string | null;
+  /** Step(반복 일정 UX 개선) — "N회 반복". null이면 횟수 제한 없음(endDate만으로
+   * 종료 판단, 그마저 null이면 무기한 반복). anchor 자신을 포함한 전체 발생
+   * 횟수를 의미한다 — count=5면 anchor 1회 + 계산된 회차 4회 = 총 5회
+   * (computeRecurringOccurrenceDates의 count 처리 주석 참고). */
+  count: number | null;
 }
 
 /** Prisma Task Row의 평평한(flat) recurrence 컬럼들을 RecurrenceRule 하나로
@@ -64,6 +72,7 @@ export function taskRowToRecurrenceRule(row: {
   recurrenceMonthlyWeekOrdinal: number | null;
   recurrenceMonthlyWeekday: string | null;
   recurrenceEndDate: Date | null;
+  recurrenceCount: number | null;
 }): RecurrenceRule {
   return {
     type: row.recurrenceType,
@@ -74,6 +83,7 @@ export function taskRowToRecurrenceRule(row: {
     monthlyWeekOrdinal: row.recurrenceMonthlyWeekOrdinal,
     monthlyWeekday: row.recurrenceMonthlyWeekday as Weekday | null,
     endDate: row.recurrenceEndDate ? row.recurrenceEndDate.toISOString() : null,
+    count: row.recurrenceCount,
   };
 }
 
@@ -86,6 +96,7 @@ export const NO_RECURRENCE: RecurrenceRule = {
   monthlyWeekOrdinal: null,
   monthlyWeekday: null,
   endDate: null,
+  count: null,
 };
 
 function jsDayToWeekday(jsDay: number): Weekday {
@@ -137,33 +148,63 @@ export function computeRecurringOccurrenceDates(rule: RecurrenceRule, anchorStar
   const rangeStartOnly = startOfDay(rangeStart);
   const rangeEndOnly = startOfDay(rangeEnd);
   const endDateOnly = rule.endDate ? startOfDay(new Date(rule.endDate)) : null;
-
-  function withinBounds(d: Date): boolean {
-    if (d.getTime() < anchorDateOnly.getTime()) return false;
-    if (endDateOnly && d.getTime() > endDateOnly.getTime()) return false;
-    if (d.getTime() < rangeStartOnly.getTime() || d.getTime() > rangeEndOnly.getTime()) return false;
-    if (d.getTime() === anchorDateOnly.getTime()) return false; // anchor 자신은 실제 Task로 이미 표시됨
-    return true;
-  }
+  // Step(반복 일정 UX 개선) — "N회 반복"(count)은 endDate와 달리 "이 조회
+  // 구간 안에서 몇 번째인지"가 아니라 "anchor로부터 전체 계열에서 몇 번째인지"로
+  // 세어야 정확하다(요청사항 13: 화면 요약/DB 값/실제 발생 횟수 3개 일치).
+  // 그래서 count가 있으면 반드시 anchor부터 순서대로 순회하며 세고
+  // (loopStart를 rangeStart로 당기지 않는다), 화면에 실제로 보여줄지는
+  // [rangeStart, rangeEnd] 안인지로 별도 필터링한다. count는 유한한 값이라
+  // (검증에서 양의 정수만 허용) 순회량이 count로 자연히 제한돼 성능 문제가
+  // 없다 — 무한 루프 방지용 안전 상한만 넉넉히 둔다(50년).
+  const maxCount = rule.count && rule.count > 1 ? rule.count : rule.count === 1 ? 1 : null;
+  const useCountLoop = maxCount !== null;
+  const safetyCapDate = addDays(anchorDateOnly, 366 * 50);
 
   const results: Date[] = [];
+  let emittedAfterAnchor = 0; // anchor 자신을 제외하고 지금까지 찾은(=이미 지나친) 회차 수
 
-  if (rule.type === "WEEKLY") {
+  /** true를 반환하면 이 지점에서 순회를 완전히 멈춰야 한다(종료일/횟수 도달). */
+  function emit(d: Date): boolean {
+    if (d.getTime() <= anchorDateOnly.getTime()) return false; // anchor 자신/이전은 제외, 계속 진행
+    if (endDateOnly && d.getTime() > endDateOnly.getTime()) return true; // 오름차순 순회 가정 — 이후로도 전부 종료일 초과
+    if (maxCount !== null && emittedAfterAnchor >= maxCount - 1) return true; // anchor가 이미 1회 — 나머지 count-1개를 다 찾음
+    emittedAfterAnchor++;
+    if (d.getTime() >= rangeStartOnly.getTime() && d.getTime() <= rangeEndOnly.getTime()) {
+      results.push(new Date(d));
+    }
+    return false;
+  }
+
+  if (rule.type === "DAILY") {
+    let d = useCountLoop ? anchorDateOnly : rangeStartOnly.getTime() < anchorDateOnly.getTime() ? anchorDateOnly : rangeStartOnly;
+    // interval 배수에 맞춰 정렬(anchor 기준) — 정렬 안 된 시작점이면 다음 유효
+    // 날짜로 스냅한다.
+    const daysSinceAnchor = Math.round((d.getTime() - anchorDateOnly.getTime()) / 86_400_000);
+    const remainder = ((daysSinceAnchor % interval) + interval) % interval;
+    if (remainder !== 0) d = addDays(d, interval - remainder);
+    const loopEnd = useCountLoop ? safetyCapDate : endDateOnly && endDateOnly.getTime() < rangeEndOnly.getTime() ? endDateOnly : rangeEndOnly;
+    while (d.getTime() <= loopEnd.getTime()) {
+      if (emit(d)) break;
+      d = addDays(d, interval);
+    }
+  } else if (rule.type === "WEEKLY") {
     if (rule.weekdays.length === 0) return [];
     const anchorWeekStart = startOfWeek(anchorDateOnly, { weekStartsOn: 1 });
-    const loopStart = rangeStartOnly.getTime() < anchorDateOnly.getTime() ? anchorDateOnly : rangeStartOnly;
-    const loopEnd = endDateOnly && endDateOnly.getTime() < rangeEndOnly.getTime() ? endDateOnly : rangeEndOnly;
+    const loopStart = useCountLoop ? anchorDateOnly : rangeStartOnly.getTime() < anchorDateOnly.getTime() ? anchorDateOnly : rangeStartOnly;
+    const loopEnd = useCountLoop ? safetyCapDate : endDateOnly && endDateOnly.getTime() < rangeEndOnly.getTime() ? endDateOnly : rangeEndOnly;
     for (let d = loopStart; d.getTime() <= loopEnd.getTime(); d = addDays(d, 1)) {
       const wd = jsDayToWeekday(d.getDay());
       if (!rule.weekdays.includes(wd)) continue;
       const weeksSinceAnchor = differenceInCalendarWeeks(d, anchorWeekStart, { weekStartsOn: 1 });
       if (weeksSinceAnchor < 0 || weeksSinceAnchor % interval !== 0) continue;
-      if (withinBounds(d)) results.push(new Date(d));
+      if (emit(d)) break;
     }
   } else if (rule.type === "MONTHLY") {
     const anchorMonthIndex = anchorDateOnly.getFullYear() * 12 + anchorDateOnly.getMonth();
-    const rangeEndMonthIndex = rangeEndOnly.getFullYear() * 12 + rangeEndOnly.getMonth();
-    let monthIndex = Math.max(anchorMonthIndex, rangeStartOnly.getFullYear() * 12 + rangeStartOnly.getMonth());
+    const rangeEndMonthIndex = useCountLoop
+      ? anchorMonthIndex + 12 * 50
+      : rangeEndOnly.getFullYear() * 12 + rangeEndOnly.getMonth();
+    let monthIndex = useCountLoop ? anchorMonthIndex : Math.max(anchorMonthIndex, rangeStartOnly.getFullYear() * 12 + rangeStartOnly.getMonth());
 
     while (monthIndex <= rangeEndMonthIndex) {
       const monthsSinceAnchor = monthIndex - anchorMonthIndex;
@@ -176,11 +217,135 @@ export function computeRecurringOccurrenceDates(rule: RecurrenceRule, anchorStar
             : rule.monthDay
               ? computeDayOfMonth(year, month, rule.monthDay)
               : null;
-        if (occDate && withinBounds(occDate)) results.push(occDate);
+        if (occDate && emit(occDate)) break;
       }
       monthIndex += 1;
+    }
+  } else if (rule.type === "YEARLY") {
+    // 매년 — "현재 일정의 월/일을 반복"(요청사항 11). anchor 자신의 월/일을
+    // 그대로 매 interval년마다 재사용한다(별도 저장 필드 불필요).
+    const anchorYear = anchorDateOnly.getFullYear();
+    const anchorMonth = anchorDateOnly.getMonth();
+    const anchorDay = anchorDateOnly.getDate();
+    const endYear = useCountLoop ? anchorYear + 50 : rangeEndOnly.getFullYear();
+    let year = useCountLoop ? anchorYear : Math.max(anchorYear, rangeStartOnly.getFullYear() - 1);
+
+    while (year <= endYear) {
+      const yearsSinceAnchor = year - anchorYear;
+      if (yearsSinceAnchor >= 0 && yearsSinceAnchor % interval === 0) {
+        // 2/29 같은 윤년 전용 날짜가 그 해에 없으면(MONTHLY의 monthDay와 동일
+        // 정책) 그 해는 건너뛴다 — 임의 보정(3/1 등)으로 밀지 않는다.
+        const occDate = computeDayOfMonth(year, anchorMonth, anchorDay);
+        if (occDate && emit(occDate)) break;
+      }
+      year += 1;
     }
   }
 
   return results;
+}
+
+/**
+ * Step 5B-7(미팅 반복 UX) — MEETING이 매주/매월 반복일 때는 사용자가 날짜를
+ * 직접 입력하지 않는다(요청사항: "미팅 날짜 + 반복 규칙을 이중으로 입력하지
+ * 않는다"). 대신 반복 규칙만으로 referenceDate 이후(당일 포함) 첫 유효 회차
+ * 날짜를 계산해 anchor로 쓴다. computeRecurringOccurrenceDates와 달리 anchor
+ * 자신을 "이미 표시된 것으로 제외"하는 로직이 없다 — 여기서는 정확히 그 anchor
+ * 자체를 찾는 것이 목적이기 때문이다(용도가 다른 별도 함수).
+ *
+ * Step 5B-10(회의록 Preview 기본정보 자동입력)에서 "다음 회의 occurrence"를
+ * 찾는 데도 그대로 재사용한다 — 그 용도에서는 이미 반복 종료일이 지정돼 있는
+ * 기존 미팅을 다룰 수 있으므로, endDate를 넘는 결과는 null로 취급하도록
+ * 보강했다(반복 일정 새로 만들 때는 endDate가 항상 null이라 이 보강이 기존
+ * 동작에 영향을 주지 않는다).
+ */
+export function computeFirstOccurrenceOnOrAfter(rule: RecurrenceRule, referenceDate: Date): Date | null {
+  const refOnly = startOfDay(referenceDate);
+  const endDateOnly = rule.endDate ? startOfDay(new Date(rule.endDate)) : null;
+
+  function withinEndDate(d: Date): boolean {
+    return !endDateOnly || d.getTime() <= endDateOnly.getTime();
+  }
+
+  // DAILY/YEARLY는 WEEKLY/MONTHLY와 달리 "특정 요일/날짜"라는 별도 제약이
+  // 없다 — 첫 회차는 항상 referenceDate 그 자신이다(그 날짜가 이후 anchor가
+  // 되어 실제 interval 정렬의 기준점이 된다).
+  if (rule.type === "DAILY" || rule.type === "YEARLY") {
+    return withinEndDate(refOnly) ? refOnly : null;
+  }
+
+  if (rule.type === "WEEKLY") {
+    if (rule.weekdays.length === 0) return null;
+    for (let i = 0; i < 7; i++) {
+      const d = addDays(refOnly, i);
+      if (rule.weekdays.includes(jsDayToWeekday(d.getDay()))) return withinEndDate(d) ? d : null;
+    }
+    return null;
+  }
+
+  if (rule.type === "MONTHLY") {
+    let monthIndex = refOnly.getFullYear() * 12 + refOnly.getMonth();
+    // 24개월 안에서 못 찾으면(예: 필수 값이 비어 있는 등) null — 무한 루프 방지.
+    for (let i = 0; i < 24; i++) {
+      const year = Math.floor(monthIndex / 12);
+      const month = monthIndex % 12;
+      const occDate =
+        rule.monthlyRuleType === "NTH_WEEKDAY" && rule.monthlyWeekday && rule.monthlyWeekOrdinal
+          ? computeNthWeekdayOfMonth(year, month, rule.monthlyWeekday, rule.monthlyWeekOrdinal)
+          : rule.monthDay
+            ? computeDayOfMonth(year, month, rule.monthDay)
+            : null;
+      if (occDate && occDate.getTime() >= refOnly.getTime()) return withinEndDate(occDate) ? occDate : null;
+      monthIndex += 1;
+    }
+    return null;
+  }
+
+  return null;
+}
+
+/**
+ * Step(반복 일정 UX 개선, 요청사항 15) — 저장 전 사용자가 설정을 한눈에
+ * 확인할 수 있는 한 줄 요약. "반복: 2주마다 월요일 · 무한 반복" 형태.
+ * anchorDate는 YEARLY의 "매년 M월 D일" 표시에만 쓰인다(다른 타입은 저장된
+ * 필드만으로 충분).
+ */
+export function describeRecurrenceRule(rule: RecurrenceRule, anchorDate: Date): string {
+  if (rule.type === "NONE") return "반복 없음";
+  const interval = Math.max(1, Math.floor(rule.interval) || 1);
+  const pad = (n: number) => String(n).padStart(2, "0");
+
+  let pattern: string;
+  if (rule.type === "DAILY") {
+    pattern = interval === 1 ? "매일" : `${interval}일마다`;
+  } else if (rule.type === "WEEKLY") {
+    const days = rule.weekdays.map((w) => WEEKDAY_LABELS[w]).join(", ");
+    const daysSuffix = days ? ` ${days}요일` : "";
+    pattern = interval === 1 ? `매주${daysSuffix}` : interval === 2 ? `격주${daysSuffix}` : `${interval}주마다${daysSuffix}`;
+  } else if (rule.type === "MONTHLY") {
+    if (rule.monthlyRuleType === "NTH_WEEKDAY" && rule.monthlyWeekday && rule.monthlyWeekOrdinal) {
+      const ordinalLabel = MONTHLY_WEEK_ORDINAL_LABELS[rule.monthlyWeekOrdinal];
+      const weekdayLabel = WEEKDAY_LABELS[rule.monthlyWeekday];
+      pattern = interval === 1 ? `매월 ${ordinalLabel} ${weekdayLabel}요일` : `${interval}개월마다 ${ordinalLabel} ${weekdayLabel}요일`;
+    } else if (rule.monthDay) {
+      pattern = interval === 1 ? `매월 ${rule.monthDay}일` : `${interval}개월마다 ${rule.monthDay}일`;
+    } else {
+      pattern = interval === 1 ? "매월" : `${interval}개월마다`;
+    }
+  } else {
+    // YEARLY
+    pattern = interval === 1 ? `매년 ${anchorDate.getMonth() + 1}월 ${anchorDate.getDate()}일` : `${interval}년마다 ${anchorDate.getMonth() + 1}월 ${anchorDate.getDate()}일`;
+  }
+
+  let endPart: string;
+  if (rule.count) {
+    endPart = `${rule.count}회`;
+  } else if (rule.endDate) {
+    const d = new Date(rule.endDate);
+    endPart = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}까지`;
+  } else {
+    endPart = "무한 반복";
+  }
+
+  return `반복: ${pattern} · ${endPart}`;
 }

@@ -4,7 +4,7 @@ export type SidebarMenuId =
   | "HOME"
   | "CHAT"
   | "SCHEDULE"
-  | "MEETING_TEMPLATES"
+  | "MEETING_MINUTES"
   | "USER_MANAGEMENT"
   | "KPI_MANAGEMENT"
   | "DATA_SOURCES"
@@ -72,15 +72,24 @@ export const SIDEBAR_MENUS: SidebarMenuDef[] = [
     defaultOrder: 0,
   },
   {
-    // Step 5B-3 — 회의록 Template Editor는 ADMIN만 관리한다(요청사항: MEMBER는
-    // Template 편집 UI 접근 불가). "프로젝트 관리" 그룹에 배치하되(요청사항:
-    // "프로젝트 관리 영역에서 관리") requiredRole로 MEMBER에게는 이 메뉴 자체가
-    // 보이지 않는다 — Sidebar가 이미 role별로 그룹 안 항목을 필터링하는 기존
-    // 구조를 그대로 재사용한다(getRenderableSidebar).
-    id: "MEETING_TEMPLATES",
-    label: "회의록 Template",
-    href: "/meeting-templates",
-    requiredRole: "ADMIN",
+    // Meeting Minutes 통합 Step — 이전엔 "회의록 Template"(ADMIN 전용)과
+    // "회의록 Preview"(전원)가 Sidebar에 별도 메뉴였다(요청사항: "Sidebar에
+    // 회의록 하나만 노출"). 내부적으로는 여전히 두 기능(Template 관리/Preview
+    // 작성)이 분리돼 있지만, 진입점은 이 메뉴 하나로 합친다. requiredRole은
+    // null로 둬서 MEMBER도 진입은 가능하게 하고(회의록 작성은 MEMBER도 가능),
+    // "양식 설정" 모드 자체는 화면 내부에서 role로 다시 gating한다
+    // (MeetingMinutesWorkspace.tsx) — 서버 Action(setActiveMeetingTemplateAction
+    // 등)은 이미 ADMIN을 별도로 강제하므로 이중 방어된다.
+    //
+    // id를 MEETING_TEMPLATES/MEETING_MINUTES_PREVIEW에서 MEETING_MINUTES로
+    // 바꿔도 안전하다 — mergeSidebarLayout이 "저장된 Layout 중 현재 Config에
+    // 없는 Menu id는 무시"하도록 이미 설계돼 있어(lib/sidebar/mergeSidebarLayout.ts
+    // 주석 참고), 과거에 저장된 SidebarLayout Row에 옛 id가 남아있어도 그냥
+    // 걸러지고 이 새 메뉴가 defaultGroupId 기준으로 자동 추가될 뿐이다.
+    id: "MEETING_MINUTES",
+    label: "회의록",
+    href: "/meeting-minutes",
+    requiredRole: null,
     fixed: false,
     defaultGroupId: "PROJECT_MANAGEMENT",
     defaultOrder: 1,

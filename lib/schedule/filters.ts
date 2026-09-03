@@ -1,4 +1,3 @@
-import type { TaskCategory, TaskStatus } from "@/app/generated/prisma/enums";
 import type { TaskWithRelations } from "@/lib/schedule/types";
 
 /**
@@ -12,8 +11,15 @@ export interface ScheduleFilters {
   assigneeIds: string[];
   /** "미배정"(TaskAssignee 없음) Task도 포함할지 — 담당자 목록과 별개 토글. */
   includeUnassigned: boolean;
-  categories: TaskCategory[];
-  statuses: TaskStatus[];
+  /** TaskCategoryOption.id 목록(문자열) — Step 5B-4부터 고정 enum이 아니다. */
+  categories: string[];
+  /** TaskStatusOption.id 목록(문자열). */
+  statuses: string[];
+  /** Step(일정 관리 + 회의록 UI Polish) — ProjectCategory.id 목록(요청사항
+   * 2: "필터: 업무 구분/상태/담당자/프로젝트 카테고리"). PROJECT 업무구분이
+   * 아닌 Task는 projectDetail 자체가 없어 이 필터가 선택돼 있으면 항상
+   * 제외된다(다른 세 축과 동일한 "빈 배열 = 필터 없음" 규칙). */
+  projectCategoryIds: string[];
 }
 
 export const EMPTY_SCHEDULE_FILTERS: ScheduleFilters = {
@@ -21,6 +27,7 @@ export const EMPTY_SCHEDULE_FILTERS: ScheduleFilters = {
   includeUnassigned: false,
   categories: [],
   statuses: [],
+  projectCategoryIds: [],
 };
 
 export function isFiltersEmpty(filters: ScheduleFilters): boolean {
@@ -28,7 +35,8 @@ export function isFiltersEmpty(filters: ScheduleFilters): boolean {
     filters.assigneeIds.length === 0 &&
     !filters.includeUnassigned &&
     filters.categories.length === 0 &&
-    filters.statuses.length === 0
+    filters.statuses.length === 0 &&
+    filters.projectCategoryIds.length === 0
   );
 }
 
@@ -48,10 +56,22 @@ function matchesStatus(task: TaskWithRelations, filters: ScheduleFilters): boole
   return filters.statuses.includes(task.status);
 }
 
-/** 담당자(합집합)·업무구분(합집합)·상태(합집합) 세 축은 서로 AND, 각 축 내부는 OR. */
+function matchesProjectCategory(task: TaskWithRelations, filters: ScheduleFilters): boolean {
+  if (filters.projectCategoryIds.length === 0) return true;
+  const categoryId = task.projectDetail?.categoryId;
+  if (!categoryId) return false;
+  return filters.projectCategoryIds.includes(categoryId);
+}
+
+/** 담당자(합집합)·업무구분(합집합)·상태(합집합)·프로젝트 카테고리(합집합)
+ * 네 축은 서로 AND, 각 축 내부는 OR. */
 export function filterTasks(tasks: TaskWithRelations[], filters: ScheduleFilters): TaskWithRelations[] {
   if (isFiltersEmpty(filters)) return tasks;
   return tasks.filter(
-    (task) => matchesAssignee(task, filters) && matchesCategory(task, filters) && matchesStatus(task, filters),
+    (task) =>
+      matchesAssignee(task, filters) &&
+      matchesCategory(task, filters) &&
+      matchesStatus(task, filters) &&
+      matchesProjectCategory(task, filters),
   );
 }

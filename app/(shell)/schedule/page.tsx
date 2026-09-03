@@ -2,7 +2,12 @@ import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { cached } from "@/lib/cache/memoCache";
 import type { TaskWithRelations } from "@/lib/schedule/types";
-import { PROJECT_CATEGORIES_CACHE_KEY } from "@/lib/schedule/constants";
+import {
+  PROJECT_CATEGORIES_CACHE_KEY,
+  PROJECT_CATEGORY_GROUPS_CACHE_KEY,
+  TASK_CATEGORY_OPTIONS_CACHE_KEY,
+  TASK_STATUS_OPTIONS_CACHE_KEY,
+} from "@/lib/schedule/constants";
 import { taskRowToRecurrenceRule } from "@/lib/schedule/recurrence";
 import { ScheduleClient } from "./ScheduleClient";
 
@@ -30,19 +35,32 @@ export default async function SchedulePage({
   // 생성에 projectName이 필요해 가볍게(projectName만) 포함하고, categoryId는
   // Task Modal을 열 때 getTaskDetailAction으로 채운다. Comment/Reply "개수"만
   // `_count`로 함께 받아 "💬 업데이트 N" 배지를 목록을 펼치지 않고도 정확히 표시한다.
-  const [tasks, users, projectCategories] = await Promise.all([
+  const [tasks, users, projectCategories, projectCategoryGroups, taskCategoryOptions, taskStatusOptions] = await Promise.all([
     prisma.task.findMany({
       orderBy: { startDate: "asc" },
       select: {
         id: true,
         title: true,
-        category: true,
-        status: true,
+        // Step 5B-4(사용자 정의 업무구분/상태) — 레거시 enum 컬럼(category/
+        // status) 대신 항상 이 두 값이 진짜 값이다.
+        categoryOptionId: true,
+        statusOptionId: true,
         startDate: true,
         dueDate: true,
         goalName: true,
         assignees: { select: { userId: true } },
-        projectDetail: { select: { projectName: true } },
+        // Step(일정 관리 + 회의록 UI Polish) — "프로젝트 카테고리" 필터
+        // (요청사항 2)를 위해 categoryId도 목록 단계부터 가볍게 함께
+        // 가져온다(scalar 필드라 비용이 거의 없다) — Task Modal의 lazy
+        // load(getTaskDetailAction) 정책 자체는 바뀌지 않는다, 그 쪽은
+        // 여전히 상세 열 때 다시 정확한 값을 채운다.
+        projectDetail: { select: { projectName: true, categoryId: true } },
+        // Step 5B-7(미팅 회차별 자동 상태) — department/location/attendeeIds는
+        // 여전히 Task Modal을 열 때만 lazy load하지만, time/endTime은 예외다 —
+        // Calendar가 화면에 보이는 모든 MEETING(원본+반복 계산 회차)의 상태를
+        // 매 렌더마다 getEffectiveTaskStatus로 계산해야 해서, Modal을 열기 전
+        // 목록 단계부터 이 두 필드만 가볍게(DateTime 2개) 함께 가져온다.
+        meetingDetail: { select: { time: true, endTime: true } },
         // 이름은 scheduleRevisions 그대로지만(Prisma relation 필드명은 select
         // key로 바꿀 수 없다) orderBy+take:1로 최신 1건의 날짜만 가져온다 —
         // 이력 전체(reasonText/creator 등)는 조회하지 않는다.
@@ -59,6 +77,10 @@ export default async function SchedulePage({
         recurrenceMonthlyWeekOrdinal: true,
         recurrenceMonthlyWeekday: true,
         recurrenceEndDate: true,
+        recurrenceCount: true,
+        // Step(담당자 UX 개선) — Week View가 "공통"/"미배정" Row를 구분하는 데
+        // 필요해 다른 scalar 필드와 함께 초기 조회에 포함한다.
+        isCommonAssignee: true,
       },
     }),
     prisma.user.findMany({
@@ -66,10 +88,13 @@ export default async function SchedulePage({
       orderBy: { name: "asc" },
       select: { id: true, name: true, email: true },
     }),
-    // 전역 구조 점검 Step: ProjectCategory는 Task Form에서 추가/삭제/비활성화할
-    // 때만 바뀌고(schedule/actions.ts 3개 함수가 저장 즉시 캐시 무효화), Task
-    // 목록만큼 자주 바뀌지 않으므로 60초 캐시로 재사용한다.
-    cached(PROJECT_CATEGORIES_CACHE_KEY, 60_000, () => prisma.projectCategory.findMany({ orderBy: { name: "asc" } })),
+    // 전역 구조 점검 Step: ProjectCategory/TaskCategoryOption/TaskStatusOption은
+    // "설정" 화면(ADMIN)에서 바뀔 때만 변하고(schedule/actions.ts가 저장 즉시
+    // 캐시 무효화), Task 목록만큼 자주 바뀌지 않으므로 60초 캐시로 재사용한다.
+    cached(PROJECT_CATEGORIES_CACHE_KEY, 60_000, () => prisma.projectCategory.findMany({ orderBy: { order: "asc" } })),
+    cached(PROJECT_CATEGORY_GROUPS_CACHE_KEY, 60_000, () => prisma.projectCategoryGroup.findMany({ orderBy: { order: "asc" } })),
+    cached(TASK_CATEGORY_OPTIONS_CACHE_KEY, 60_000, () => prisma.taskCategoryOption.findMany({ orderBy: { order: "asc" } })),
+    cached(TASK_STATUS_OPTIONS_CACHE_KEY, 60_000, () => prisma.taskStatusOption.findMany({ orderBy: { order: "asc" } })),
   ]);
 
   const tasksForClient: TaskWithRelations[] = tasks.map((task) => {
@@ -79,7 +104,7 @@ export default async function SchedulePage({
     return {
       id: task.id,
       title: task.title,
-      category: task.category,
+      category: task.categoryOptionId,
       startDate: (latestRevision?.startDate ?? task.startDate).toISOString(),
       dueDate: (latestRevision?.dueDate ?? task.dueDate).toISOString(),
       // Task 상세를 열기 전까지는 "최초 일정" 표시용 임시값으로 effective 날짜를
@@ -87,13 +112,24 @@ export default async function SchedulePage({
       // 정확한 원본 값으로 교체된다(TaskDetailPanel).
       originalStartDate: task.startDate.toISOString(),
       originalDueDate: task.dueDate.toISOString(),
-      status: task.status,
+      status: task.statusOptionId,
       memo: null,
       goalName: task.goalName,
       halfDayPeriod: null,
       assigneeIds: task.assignees.map((a) => a.userId),
-      projectDetail: task.projectDetail ? { projectName: task.projectDetail.projectName, categoryId: null } : null,
-      meetingDetail: null,
+      isCommonAssignee: task.isCommonAssignee,
+      projectDetail: task.projectDetail
+        ? { projectName: task.projectDetail.projectName, categoryId: task.projectDetail.categoryId }
+        : null,
+      meetingDetail: task.meetingDetail
+        ? {
+            department: null,
+            time: task.meetingDetail.time ? task.meetingDetail.time.toISOString() : null,
+            endTime: task.meetingDetail.endTime ? task.meetingDetail.endTime.toISOString() : null,
+            location: null,
+            attendeeIds: [],
+          }
+        : null,
       scheduleRevisions: [],
       comments: [],
       commentCount: task._count.comments,
@@ -110,15 +146,22 @@ export default async function SchedulePage({
 
   return (
     <div className="flex h-dvh min-h-[560px] flex-col overflow-hidden p-8">
+      {/* Step(일정 관리 + 회의록 UI Polish) — Page Title 존재감 강화(요청사항 1):
+          text-lg(18px)/semibold이던 것을 text-3xl(30px)/bold로 키우고, 보조
+          설명 1줄을 그대로 유지하되 제목-컨트롤 간 여백을 넓힌다(mt-6 →
+          아래 컨테이너의 mt-7). 디자인 톤(navy 팔레트)은 그대로 유지한다. */}
       <div className="shrink-0">
-        <h1 className="text-lg font-semibold text-navy-950">일정 관리</h1>
-        <p className="mt-1 text-sm text-navy-950/60">빈 날짜를 클릭해 새 업무를 등록하고, 업무를 클릭해 수정합니다.</p>
+        <h1 className="text-3xl font-bold text-navy-950">일정 관리</h1>
+        <p className="mt-1.5 text-sm text-navy-950/60">이번 주 업무와 회의 일정을 관리합니다.</p>
       </div>
-      <div className="mt-6 min-h-0 flex-1">
+      <div className="mt-7 min-h-0 flex-1">
         <ScheduleClient
           tasks={tasksForClient}
           users={users}
           projectCategories={projectCategories}
+          projectCategoryGroups={projectCategoryGroups}
+          taskCategoryOptions={taskCategoryOptions}
+          taskStatusOptions={taskStatusOptions}
           currentUser={currentUser}
           initialFocus={initialFocus}
         />

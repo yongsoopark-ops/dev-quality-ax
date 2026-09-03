@@ -2,8 +2,16 @@
 
 import { useEffect, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import type { ProjectCategoryOption, ScheduleCurrentUser, ScheduleUser, TaskWithRelations } from "@/lib/schedule/types";
+import type {
+  ProjectCategoryGroupOption,
+  ProjectCategoryOption,
+  ScheduleCurrentUser,
+  ScheduleOptionInfo,
+  ScheduleUser,
+  TaskWithRelations,
+} from "@/lib/schedule/types";
 import { CalendarView } from "./CalendarView";
+import { ScheduleSettingsModal } from "./ScheduleSettingsModal";
 import { TaskDetailPanel } from "./TaskDetailPanel";
 
 type Selection =
@@ -25,12 +33,19 @@ export function ScheduleClient({
   tasks,
   users,
   projectCategories,
+  projectCategoryGroups,
+  taskCategoryOptions,
+  taskStatusOptions,
   currentUser,
   initialFocus,
 }: {
   tasks: TaskWithRelations[];
   users: ScheduleUser[];
   projectCategories: ProjectCategoryOption[];
+  /** Step 5B-5(2단계 계층화) — 대분류 목록. */
+  projectCategoryGroups: ProjectCategoryGroupOption[];
+  taskCategoryOptions: ScheduleOptionInfo[];
+  taskStatusOptions: ScheduleOptionInfo[];
   currentUser: ScheduleCurrentUser;
   /** Bell Notification Deep Link(요청사항 9) — page.tsx가 이미 taskId 존재를
    * 확인해 내려준 값이다. 여기서는 "Task Modal + Update Modal을 미리 열어 둔
@@ -40,6 +55,14 @@ export function ScheduleClient({
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
+  // Step 5B-4(일정 설정) — page.tsx가 내려준 초깃값을 낙관적으로 들고 있다가,
+  // 설정 화면에서 추가/수정/순서변경이 성공하면 그 결과로 갱신한다(다른
+  // Client 상태와 동일한 패턴 — 서버 재조회 없이 즉시 반영).
+  const [categoryOptions, setCategoryOptions] = useState(taskCategoryOptions);
+  const [statusOptions, setStatusOptions] = useState(taskStatusOptions);
+  const [projectCats, setProjectCats] = useState(projectCategories);
+  const [projectCatGroups, setProjectCatGroups] = useState(projectCategoryGroups);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [selection, setSelection] = useState<Selection>(() => {
     if (!initialFocus) return null;
     const task = tasks.find((t) => t.id === initialFocus.taskId);
@@ -82,10 +105,51 @@ export function ScheduleClient({
     setSelection({ mode: "edit", task });
   }
 
+  /** Step(일정 관리 + 회의록 UI Polish) — Primary "+ 일정 등록"(요청사항 2).
+   * 빈 날짜 클릭(handleSelectSlot)과 완전히 같은 create 모드로 열되, 클릭
+   * 위치라는 개념이 없으니 기본값은 오늘 하루로 둔다 — Modal 자체의 입력/
+   * 저장/validation은 전혀 건드리지 않는다(기존 create 흐름 그대로 재사용).
+   */
+  function handleCreateClick() {
+    if (selection) return;
+    const todayStr = toDateOnly(new Date());
+    setSelection({ mode: "create", defaultStartDate: todayStr, defaultDueDate: todayStr });
+  }
+
   return (
     <div className="flex h-full flex-col">
+      {/* Step(일정 관리 + 회의록 UI Polish) — 상단 Control 영역(요청사항 2):
+          Primary("+ 일정 등록")를 왼쪽에 강조된 버튼으로 두고, Secondary
+          ("⚙️ 일정 설정", ADMIN 전용)는 오른쪽에 그대로 둔다. 높이/글자
+          크기를 키워 시인성을 높였다(h-9 ≈ 36px). */}
+      <div className="mb-3 flex shrink-0 items-center justify-between gap-2">
+        <button
+          type="button"
+          onClick={handleCreateClick}
+          className="flex h-9 items-center gap-1.5 rounded-md bg-navy-900 px-4 text-sm font-semibold text-white hover:bg-navy-800"
+        >
+          <span aria-hidden>+</span> 일정 등록
+        </button>
+        {currentUser.role === "ADMIN" && (
+          <button
+            type="button"
+            onClick={() => setSettingsOpen(true)}
+            className="flex h-9 items-center gap-1.5 rounded-md border border-navy-100 px-3 text-sm font-medium text-navy-950/70 hover:bg-navy-50"
+          >
+            <span aria-hidden>⚙️</span> 일정 설정
+          </button>
+        )}
+      </div>
       <div className="min-h-0 flex-1 rounded-xl border border-navy-100 bg-white p-3">
-        <CalendarView tasks={tasks} users={users} onSelectTask={handleSelectTask} onSelectSlot={handleSelectSlot} />
+        <CalendarView
+          tasks={tasks}
+          users={users}
+          taskCategoryOptions={categoryOptions}
+          taskStatusOptions={statusOptions}
+          projectCategories={projectCats}
+          onSelectTask={handleSelectTask}
+          onSelectSlot={handleSelectSlot}
+        />
       </div>
 
       {selection && (
@@ -96,7 +160,10 @@ export function ScheduleClient({
           defaultStartDate={selection.mode === "create" ? selection.defaultStartDate : undefined}
           defaultDueDate={selection.mode === "create" ? selection.defaultDueDate : undefined}
           users={users}
-          projectCategories={projectCategories}
+          projectCategories={projectCats}
+          projectCategoryGroups={projectCatGroups}
+          taskCategoryOptions={categoryOptions}
+          taskStatusOptions={statusOptions}
           currentUser={currentUser}
           initialShowUpdateModal={
             selection.mode === "edit" && pendingFocus?.taskId === selection.task.id ? true : undefined
@@ -108,6 +175,20 @@ export function ScheduleClient({
             setSelection(null);
             setPendingFocus(undefined);
           }}
+        />
+      )}
+
+      {settingsOpen && currentUser.role === "ADMIN" && (
+        <ScheduleSettingsModal
+          categoryOptions={categoryOptions}
+          statusOptions={statusOptions}
+          projectCategories={projectCats}
+          projectCategoryGroups={projectCatGroups}
+          onCategoryOptionsChange={setCategoryOptions}
+          onStatusOptionsChange={setStatusOptions}
+          onProjectCategoriesChange={setProjectCats}
+          onProjectCategoryGroupsChange={setProjectCatGroups}
+          onClose={() => setSettingsOpen(false)}
         />
       )}
     </div>

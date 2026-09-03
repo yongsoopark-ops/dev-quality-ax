@@ -1,19 +1,9 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import {
-  TASK_CATEGORY_LABELS,
-  TASK_CATEGORY_OPTIONS,
-  TASK_CATEGORY_TINTS,
-  TASK_STATUS_LABELS,
-  TASK_STATUS_OPTIONS,
-  TASK_STATUS_TINTS,
-  getUserInitials,
-  getUserTint,
-  UNASSIGNED_USER_TINT,
-} from "@/lib/schedule/constants";
+import { getUserInitials, getUserTint, tintFromColor, UNASSIGNED_USER_TINT } from "@/lib/schedule/constants";
 import { EMPTY_SCHEDULE_FILTERS, type ScheduleFilters } from "@/lib/schedule/filters";
-import type { ScheduleUser } from "@/lib/schedule/types";
+import type { ProjectCategoryOption, ScheduleOptionInfo, ScheduleUser } from "@/lib/schedule/types";
 
 function toggle<T>(list: T[], value: T): T[] {
   return list.includes(value) ? list.filter((v) => v !== value) : [...list, value];
@@ -48,18 +38,21 @@ function FilterTrigger({
 
   return (
     <div className="relative" ref={ref}>
+      {/* Step(일정 관리 + 회의록 UI Polish) — 필터 Trigger 높이/글자 확대
+          (요청사항 2: "필터가 존재하는지 한눈에 인지 가능해야 한다") —
+          h-7(28px) 정도이던 것을 h-9(36px)로, text-xs(12px)→text-sm(14px)로. */}
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className={`flex items-center gap-1 rounded-md border px-2.5 py-1 text-xs font-medium ${
+        className={`flex h-9 items-center gap-1.5 rounded-md border px-3 text-sm font-medium ${
           count > 0
-            ? "border-navy-100 bg-navy-50 text-navy-900"
-            : "border-navy-100 text-navy-950/60 hover:bg-navy-50"
+            ? "border-navy-200 bg-navy-50 text-navy-900"
+            : "border-navy-100 text-navy-950/70 hover:bg-navy-50"
         }`}
       >
         {label}
         {count > 0 && <span className="text-navy-950/50">{count}</span>}
-        <span className="text-[9px] text-navy-950/40">▾</span>
+        <span className="text-[10px] text-navy-950/40">▾</span>
       </button>
       {open && (
         <div className="absolute left-0 top-full z-20 mt-1 max-h-72 w-64 overflow-y-auto rounded-lg border border-navy-100 bg-white p-2.5 shadow-lg">
@@ -110,7 +103,7 @@ function AssigneeAvatarButton({
         className="flex h-9 w-9 items-center justify-center rounded-full text-xs font-semibold"
         style={
           selected
-            ? { backgroundColor: tint.avatarBg, color: tint.avatarText, boxShadow: `0 0 0 2px ${tint.ring}` }
+            ? { backgroundColor: tint.avatarBg, color: tint.avatarText, boxShadow: `0 0 0 2px ${tint.accent}` }
             : { backgroundColor: "#eef0f3", color: "#94a3b8" }
         }
       >
@@ -151,17 +144,36 @@ function CardToggle({
 
 export function ScheduleFilterBar({
   users,
+  categoryOptions,
+  statusOptions,
+  projectCategories,
   filters,
   onChange,
 }: {
   users: ScheduleUser[];
+  /** Step 5B-4(사용자 정의 업무구분) — 비활성 옵션은 필터에서도 숨긴다(요청
+   * 없는 옵션을 선택할 이유가 없다 — dropdown과 동일 기준). */
+  categoryOptions: ScheduleOptionInfo[];
+  statusOptions: ScheduleOptionInfo[];
+  /** Step(일정 관리 + 회의록 UI Polish) — 새 "프로젝트 카테고리" 필터
+   * (요청사항 2)가 쓰는 목록. */
+  projectCategories: ProjectCategoryOption[];
   filters: ScheduleFilters;
   onChange: (next: ScheduleFilters) => void;
 }) {
   const assigneeCount = filters.assigneeIds.length + (filters.includeUnassigned ? 1 : 0);
+  const activeCategoryOptions = categoryOptions.filter((c) => c.active);
+  const activeStatusOptions = statusOptions.filter((s) => s.active);
+  const activeProjectCategories = projectCategories.filter((c) => c.active);
 
   return (
     <div className="flex flex-wrap items-center gap-2">
+      {/* Step(일정 관리 + 회의록 UI Polish) — "필터가 존재하는지 한눈에
+          인지 가능해야 한다"(요청사항 2) — 아이콘 + 라벨로 이 버튼 묶음이
+          필터 영역임을 명시한다. */}
+      <span className="flex items-center gap-1 text-sm font-medium text-navy-950/50" aria-hidden>
+        🔍 필터
+      </span>
       <FilterTrigger label="담당자" count={assigneeCount}>
         <div className="grid grid-cols-4 gap-2">
           {users.map((u, i) => (
@@ -184,7 +196,7 @@ export function ScheduleFilterBar({
             className="flex h-6 w-6 items-center justify-center rounded-full"
             style={
               filters.includeUnassigned
-                ? { backgroundColor: UNASSIGNED_USER_TINT.avatarBg, boxShadow: `0 0 0 2px ${UNASSIGNED_USER_TINT.ring}` }
+                ? { backgroundColor: UNASSIGNED_USER_TINT.avatarBg, boxShadow: `0 0 0 2px ${UNASSIGNED_USER_TINT.accent}` }
                 : { backgroundColor: "#eef0f3" }
             }
           >
@@ -196,13 +208,13 @@ export function ScheduleFilterBar({
 
       <FilterTrigger label="업무 구분" count={filters.categories.length}>
         <div className="grid grid-cols-2 gap-1.5">
-          {TASK_CATEGORY_OPTIONS.map((c) => (
+          {activeCategoryOptions.map((c) => (
             <CardToggle
-              key={c}
-              selected={filters.categories.includes(c)}
-              onClick={() => onChange({ ...filters, categories: toggle(filters.categories, c) })}
-              label={TASK_CATEGORY_LABELS[c]}
-              tint={TASK_CATEGORY_TINTS[c]}
+              key={c.id}
+              selected={filters.categories.includes(c.id)}
+              onClick={() => onChange({ ...filters, categories: toggle(filters.categories, c.id) })}
+              label={c.label}
+              tint={tintFromColor(c.color)}
             />
           ))}
         </div>
@@ -210,19 +222,34 @@ export function ScheduleFilterBar({
 
       <FilterTrigger label="상태" count={filters.statuses.length}>
         <div className="grid grid-cols-2 gap-1.5">
-          {TASK_STATUS_OPTIONS.map((s) => (
+          {activeStatusOptions.map((s) => (
             <CardToggle
-              key={s}
-              selected={filters.statuses.includes(s)}
-              onClick={() => onChange({ ...filters, statuses: toggle(filters.statuses, s) })}
-              label={TASK_STATUS_LABELS[s]}
-              tint={TASK_STATUS_TINTS[s]}
+              key={s.id}
+              selected={filters.statuses.includes(s.id)}
+              onClick={() => onChange({ ...filters, statuses: toggle(filters.statuses, s.id) })}
+              label={s.label}
+              tint={tintFromColor(s.color)}
             />
           ))}
         </div>
       </FilterTrigger>
 
-      {(assigneeCount > 0 || filters.categories.length > 0 || filters.statuses.length > 0) && (
+      <FilterTrigger label="프로젝트 카테고리" count={filters.projectCategoryIds.length}>
+        <div className="grid grid-cols-2 gap-1.5">
+          {activeProjectCategories.map((c) => (
+            <CardToggle
+              key={c.id}
+              selected={filters.projectCategoryIds.includes(c.id)}
+              onClick={() => onChange({ ...filters, projectCategoryIds: toggle(filters.projectCategoryIds, c.id) })}
+              label={c.name}
+              tint={tintFromColor(c.color)}
+            />
+          ))}
+          {activeProjectCategories.length === 0 && <p className="col-span-2 text-xs text-navy-950/40">등록된 카테고리가 없습니다.</p>}
+        </div>
+      </FilterTrigger>
+
+      {(assigneeCount > 0 || filters.categories.length > 0 || filters.statuses.length > 0 || filters.projectCategoryIds.length > 0) && (
         <button
           type="button"
           onClick={() => onChange(EMPTY_SCHEDULE_FILTERS)}

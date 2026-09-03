@@ -1,8 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { DndContext, PointerSensor, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
-import { SortableContext, arrayMove, verticalListSortingStrategy } from "@dnd-kit/sortable";
+import type { JSONContent } from "@tiptap/react";
 import {
   createMeetingTemplateAction,
   deleteMeetingTemplateAction,
@@ -11,58 +10,29 @@ import {
   type MeetingTemplateInfo,
 } from "@/lib/meetingTemplates/actions";
 import { MEETING_TEMPLATE_TYPE_LABELS, MEETING_TEMPLATE_TYPE_OPTIONS } from "@/lib/meetingTemplates/constants";
-import { FREE_BLOCK_MENU_ITEMS } from "@/lib/meetingTemplates/defaults";
-import type { MeetingTemplateBlock } from "@/lib/meetingTemplates/types";
+import { convertBlocksToDocument, EMPTY_DOCUMENT_CONTENT } from "@/lib/meetingTemplates/richText";
 import type { MeetingTemplateType } from "@/app/generated/prisma/enums";
-import { DocumentSection } from "./DocumentSection";
+import { TemplateRichTextEditor } from "./TemplateRichTextEditor";
 
-/**
- * Step 5B-3.2(자유 문서 Editor) — "+ 섹션 추가" 메뉴가 이제 일반 문서 요소
- * 5개(제목/본문/글머리표 목록/번호 목록/표)만 보여준다(요청사항: 회의록
- * 내부 block type을 사용자가 선택하지 않게 한다). meeting-info/agenda-list/
- * project-list/action-item-list/review-list는 더 이상 이 메뉴에 없다.
- */
-function AddSectionMenu({ onAdd }: { onAdd: (create: (order: number) => MeetingTemplateBlock) => void }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <div className="relative">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        className="w-full rounded-md border border-dashed border-navy-200 py-2 text-sm text-navy-950/40 hover:border-navy-300 hover:bg-navy-50/60 hover:text-navy-950/70"
-      >
-        + 추가
-      </button>
-      {open && (
-        <div className="absolute left-0 top-full z-20 mt-1 grid w-48 grid-cols-1 gap-0.5 rounded-md border border-navy-100 bg-white p-1.5 shadow-lg">
-          {FREE_BLOCK_MENU_ITEMS.map((item) => (
-            <button
-              key={item.key}
-              type="button"
-              onClick={() => {
-                onAdd(item.create);
-                setOpen(false);
-              }}
-              className="flex items-center gap-2 rounded px-2 py-1.5 text-left text-sm text-navy-950/80 hover:bg-navy-50"
-            >
-              <span className="w-4 text-center">{item.icon}</span>
-              {item.label}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  );
+/** 이 Template이 처음 열릴 때 보여줄 문서를 고른다:
+ * 1) 5B-3.3(Rich Text Editor)으로 이미 한 번이라도 저장된 적이 있으면
+ *    documentContent를 그대로 쓴다.
+ * 2) 없지만 5B-3.2까지의 block(templateSchema)이 있으면 1회성으로 문서로
+ *    변환한다 — "저장"을 눌러야만 실제 documentContent로 반영된다
+ *    (요청사항: 기존 Template 데이터가 깨지지 않도록).
+ * 3) 완전히 새 Template이면 빈 문서에서 시작한다. */
+function initialDocumentContent(template: MeetingTemplateInfo | null): JSONContent {
+  if (!template) return EMPTY_DOCUMENT_CONTENT;
+  if (template.documentContent) return template.documentContent;
+  if (template.templateSchema.length > 0) return convertBlocksToDocument(template.templateSchema);
+  return EMPTY_DOCUMENT_CONTENT;
 }
 
 /**
- * Step 5B-3.1(문서형 Editor 재설계) — 데이터 구조(MeetingTemplateBlock 등)와
- * 저장/활성 전환 로직은 Step 5B-3과 동일하게 유지한다. 바뀐 것은 오직
- * "어떻게 보여주고 편집하는지"뿐이다 — 예전엔 각 block이 "타입 라벨 +
- * 체크박스 여러 개 + 설정 폼"으로 늘어선 개발자용 폼이었다면, 이제는 하나의
- * 문서(Canvas)를 Word/Notion처럼 직접 편집하는 것처럼 보인다. block.type/
- * source/aiEditable/userEditable/config는 그대로 저장되고, 그대로
- * validateMeetingTemplateSchema를 통과해야 저장된다 — 화면만 바뀌었다.
+ * Step 5B-3.3(Rich Text Editor 전환) — 문서 Canvas는 이제 block 목록이 아니라
+ * TemplateRichTextEditor 하나다. 이름/회의 유형/저장·삭제·활성 전환 같은
+ * Template 자체의 메타데이터/동작은 Step 5B-3과 동일하게 유지한다 — 바뀐 건
+ * "문서 본문을 어떻게 편집하는지"뿐이다.
  */
 export function TemplateEditor({
   template,
@@ -80,63 +50,38 @@ export function TemplateEditor({
   const [currentTemplate, setCurrentTemplate] = useState<MeetingTemplateInfo | null>(template);
   const [name, setName] = useState(template?.name ?? "");
   const [meetingType, setMeetingType] = useState<MeetingTemplateType>(template?.meetingType ?? MEETING_TEMPLATE_TYPE_OPTIONS[0]);
-  const [blocks, setBlocks] = useState<MeetingTemplateBlock[]>(template?.templateSchema ?? []);
+  const [documentContent, setDocumentContent] = useState<JSONContent>(() => initialDocumentContent(template));
   const [saving, setSaving] = useState(false);
   const [activating, setActivating] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [justSaved, setJustSaved] = useState(false);
 
-  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }));
-
-  function updateBlock(id: string, patch: Record<string, unknown>) {
-    setJustSaved(false);
-    // discriminated union이라 TS가 일반화된 patch 타입을 정적으로 좁히지
-    // 못해 여기 한 곳에서만 단언한다 — patch는 항상 SectionBody/
-    // SectionSettingsPopover가 그 block과 같은 type에 맞춰 만든 값이다.
-    setBlocks((prev) => prev.map((b) => (b.id === id ? ({ ...b, ...patch } as MeetingTemplateBlock) : b)));
-  }
-
-  function removeBlock(id: string) {
-    setJustSaved(false);
-    setBlocks((prev) => prev.filter((b) => b.id !== id).map((b, i) => ({ ...b, order: i })));
-  }
-
-  function addBlock(create: (order: number) => MeetingTemplateBlock) {
-    setJustSaved(false);
-    setBlocks((prev) => [...prev, create(prev.length)]);
-  }
-
-  function handleDragEnd(event: DragEndEvent) {
-    const { active, over } = event;
-    if (!over || active.id === over.id) return;
-    setJustSaved(false);
-    setBlocks((prev) => {
-      const oldIndex = prev.findIndex((b) => b.id === active.id);
-      const newIndex = prev.findIndex((b) => b.id === over.id);
-      if (oldIndex === -1 || newIndex === -1) return prev;
-      return arrayMove(prev, oldIndex, newIndex).map((b, i) => ({ ...b, order: i }));
-    });
-  }
-
   async function handleSave() {
     setSaving(true);
     setError(null);
     setJustSaved(false);
     try {
-      // 저장 직전 order를 배열 위치와 항상 일치시킨다(Drag & Drop이 매번
-      // 갱신하지만, 블록 추가/삭제 직후에도 어긋나지 않도록 방어적으로 재계산).
-      const orderedBlocks = blocks.map((b, i) => ({ ...b, order: i }));
+      // Step(회의록 줄간격 개선) — 실제로 재현/확인한 문제: 이 문서 트리는
+      // 같은 attrs 모양(예: {textAlign:null, lineHeight:null, level:1})을
+      // 가진 heading/paragraph가 수십 개씩 반복된다. Next.js Server Action
+      // 인자를 객체 그대로 넘기면, 그 반복되는 attrs 객체들 사이 어딘가에서
+      // "정규 프로젝트"처럼 실제로 값이 다른 노드의 attrs(lineHeight:"1.6"
+      // 등)가 서버에 도착했을 때 사라지는 현상을 서버 로그로 직접 확인했다
+      // (클라이언트 documentContent 상태와 onUpdate 시점 JSON에는 분명히
+      // 있었는데, 서버 액션의 raw input에는 없었다). 문자열로 직렬화해서
+      // 넘기면 이 문제가 재현되지 않아(검증 완료) 안전하게 우회한다 —
+      // Server Action이 복잡한 중첩 JSON 인자를 다룰 때 흔히 쓰는 방식이다.
+      const documentContentPayload = JSON.stringify(documentContent);
       const res = currentTemplate
-        ? await updateMeetingTemplateAction(currentTemplate.id, { name, meetingType, templateSchema: orderedBlocks })
-        : await createMeetingTemplateAction({ name, meetingType, templateSchema: orderedBlocks });
+        ? await updateMeetingTemplateAction(currentTemplate.id, { name, meetingType, documentContent: documentContentPayload })
+        : await createMeetingTemplateAction({ name, meetingType, documentContent: documentContentPayload });
 
       if (res.error || !res.template) {
         setError(res.error ?? "저장하지 못했습니다.");
         return;
       }
       setCurrentTemplate(res.template);
-      setBlocks(res.template.templateSchema);
       setJustSaved(true);
       onSaved(res.template);
     } catch {
@@ -189,7 +134,12 @@ export function TemplateEditor({
   }
 
   return (
-    <div className="space-y-3 pb-8">
+    // Step 5B-3.4(Editor 사용성 보완) — 문서가 화면의 중심으로 느껴지도록
+    // 상단 액션바/이름·회의유형 영역/문서 Canvas를 전부 같은 폭(880px)의
+    // 한 컬럼 안에 정렬한다(요청사항: "실제 문서가 화면의 중심으로 느껴져야
+    // 한다"). 모바일에서는 max-w가 뷰포트 폭에 자연히 눌려 기존 반응형이
+    // 그대로 유지된다.
+    <div className="mx-auto max-w-[880px] space-y-3 pb-8">
       {/* 문서 바깥 툴바 — Template 자체의 메타데이터/동작이라 "문서 안"에는
           두지 않는다(요청사항: 문서 캔버스에는 실제 문서 내용만). */}
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -233,9 +183,12 @@ export function TemplateEditor({
         </div>
       </div>
 
-      <div className="flex flex-wrap items-center gap-2 rounded-md border border-navy-100 bg-navy-50/60 px-3 py-2">
+      {/* 이름/회의 유형 — 예전엔 카드처럼 박스(배경+테두리)로 강조돼 있어
+          "설정 화면"처럼 보였다(요청사항으로 지적됨). 이제는 옅은 텍스트의
+          가벼운 한 줄로만 두고, 실제 문서 Canvas가 화면에서 더 강조되게 한다. */}
+      <div className="flex flex-wrap items-center gap-3 px-0.5">
         <input
-          className="min-w-[160px] flex-1 rounded-md border border-navy-100 bg-white px-2.5 py-1.5 text-sm"
+          className="min-w-[160px] flex-1 border-b border-transparent bg-transparent py-1 text-sm text-navy-950/70 outline-none focus:border-navy-200"
           value={name}
           onChange={(e) => {
             setName(e.target.value);
@@ -244,7 +197,7 @@ export function TemplateEditor({
           placeholder="Template 이름(예: 파트 주간회의 기본 양식)"
         />
         <select
-          className="rounded-md border border-navy-100 bg-white px-2.5 py-1.5 text-sm"
+          className="rounded border border-navy-100/70 bg-transparent px-2 py-1 text-xs text-navy-950/50"
           value={meetingType}
           onChange={(e) => {
             setMeetingType(e.target.value as MeetingTemplateType);
@@ -262,29 +215,14 @@ export function TemplateEditor({
       {error && <p className="text-xs text-red-600">{error}</p>}
       {justSaved && !error && <p className="text-xs text-emerald-700">저장되었습니다.</p>}
 
-      {/* 문서 Canvas — Word/Notion처럼 종이 위에 섹션들이 쌓인 것처럼 보인다.
-          내부적으로는 각 섹션이 여전히 하나의 MeetingTemplateBlock이다. */}
-      <div className="mx-auto max-w-[720px] rounded-lg border border-navy-100 bg-white p-8 shadow-sm">
-        <DndContext sensors={sensors} onDragEnd={handleDragEnd}>
-          <SortableContext items={blocks.map((b) => b.id)} strategy={verticalListSortingStrategy}>
-            <div className="space-y-3">
-              {blocks.map((block) => (
-                <DocumentSection key={block.id} block={block} onUpdate={(patch) => updateBlock(block.id, patch)} onRemove={() => removeBlock(block.id)} />
-              ))}
-            </div>
-          </SortableContext>
-        </DndContext>
-
-        {blocks.length === 0 && (
-          <p className="mb-3 rounded-md border border-dashed border-navy-200 p-4 text-center text-xs text-navy-950/40">
-            빈 문서입니다. 아래 &quot;+ 추가&quot;로 제목/본문/목록/표를 자유롭게 써 내려가세요.
-          </p>
-        )}
-
-        <div className="mt-3">
-          <AddSectionMenu onAdd={addBlock} />
-        </div>
-      </div>
+      {/* 문서 Canvas — Monday Docs/Word처럼 하나의 문서를 직접 쓴다. */}
+      <TemplateRichTextEditor
+        value={documentContent}
+        onChange={(next) => {
+          setDocumentContent(next);
+          setJustSaved(false);
+        }}
+      />
     </div>
   );
 }

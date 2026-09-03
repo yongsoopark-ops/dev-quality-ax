@@ -7,7 +7,12 @@
  * 로직(actions.ts)과 그대로 호환된다.
  */
 const HOURS = Array.from({ length: 24 }, (_, i) => String(i).padStart(2, "0"));
-const MINUTES = ["00", "15", "30", "45"];
+/** Step 5B-8(5분 단위) — 예전엔 15분 단위였다. 이미 저장된 값이 5분 단위가
+ * 아닌 경우(과거 데이터)는 아래 minuteOptions에서 현재 값을 목록에 끼워 넣어
+ * 보여준다 — CategorySelect/StatusSegmented의 "현재 선택된 값은 비활성이어도
+ * 목록에 남긴다" 규칙과 같은 이유다(그러지 않으면 select가 빈 값처럼 보이고,
+ * 저장하지 않고 다른 필드만 바꿔도 시간이 조용히 다른 값으로 바뀔 수 있다). */
+const MINUTES = ["00", "05", "10", "15", "20", "25", "30", "35", "40", "45", "50", "55"];
 
 export function TimeSelect({
   value,
@@ -19,6 +24,7 @@ export function TimeSelect({
   className?: string;
 }) {
   const [hour, minute] = value ? value.split(":") : ["", ""];
+  const minuteOptions = minute && !MINUTES.includes(minute) ? [...MINUTES, minute].sort() : MINUTES;
 
   function setHour(h: string) {
     onChange(`${h}:${minute || "00"}`);
@@ -44,7 +50,7 @@ export function TimeSelect({
         <option value="" disabled>
           분
         </option>
-        {MINUTES.map((m) => (
+        {minuteOptions.map((m) => (
           <option key={m} value={m}>
             {m}
           </option>

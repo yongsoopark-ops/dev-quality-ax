@@ -244,12 +244,25 @@ async function main() {
         });
       }
 
+      // Step 5B-5(프로젝트 카테고리 2단계 계층화) — groupId가 새 필수 컬럼이
+      // 됐다. SQLite 백업에는 대분류 개념이 없으므로(이 스크립트가 다시
+      // 실행될 일은 없지만 컴파일이 깨지지 않도록), migration의 기본 "미분류"
+      // Group을 이름으로 찾아 그대로 배치한다 — 실제 이관 대상 데이터는 이미
+      // Supabase에 있으므로 이 분기가 실행될 일은 없다.
+      let defaultGroupId: string | null = null;
+      if (projectCategories.length > 0) {
+        const defaultGroup = await tx.projectCategoryGroup.findFirst({ where: { name: "미분류" } });
+        if (!defaultGroup) throw new Error('"미분류" ProjectCategoryGroup을 찾을 수 없습니다 — 먼저 schedule_custom_options 계열 migration이 적용됐는지 확인하세요.');
+        defaultGroupId = defaultGroup.id;
+      }
+
       for (const c of projectCategories) {
         await tx.projectCategory.create({
           data: {
             id: c.id as string,
             name: c.name as string,
             active: toBool(c.active),
+            groupId: defaultGroupId!,
             createdAt: toDate(c.createdAt)!,
             updatedAt: toDate(c.updatedAt)!,
           },
@@ -262,6 +275,14 @@ async function main() {
             id: t.id as string,
             title: t.title as string,
             category: t.category as never,
+            // Step 5B-4(사용자 정의 상태/업무구분) — categoryOptionId/
+            // statusOptionId가 새 필수 컬럼이 됐다. 이 1회성 스크립트가 다시
+            // 실행될 일은 없지만(SQLite 원본은 이미 이관 완료), 컴파일이
+            // 깨지지 않도록 예전 enum 값과 동일한 문자열을 그대로 넣는다 —
+            // 시스템 예약 7종/4종은 TaskCategoryOption/TaskStatusOption의 id도
+            // 이 문자열과 같게 seed돼 있어(prisma migration) FK가 그대로 맞는다.
+            categoryOptionId: t.category as string,
+            statusOptionId: t.status as string,
             startDate: toDate(t.startDate)!,
             dueDate: toDate(t.dueDate)!,
             status: t.status as never,

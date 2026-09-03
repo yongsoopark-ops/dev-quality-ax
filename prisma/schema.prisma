@@ -98,10 +98,15 @@ enum NotificationType {
 }
 
 /// Step 5B-1(반복 일정). NONE이면 기존과 동일한 1회성 일정이다.
+/// Step(담당자 UX + 반복 일정 UX 개선)에서 DAILY/YEARLY를 추가했다 — 기존
+/// NONE/WEEKLY/MONTHLY 값과 그 값을 저장한 기존 Row에는 전혀 영향 없다
+/// (enum에 값만 추가하는 것은 항상 안전한 additive 변경).
 enum RecurrenceType {
   NONE
+  DAILY
   WEEKLY
   MONTHLY
+  YEARLY
 }
 
 /// MONTHLY 반복에서 "매월 15일"처럼 날짜를 고정할지, "매월 첫째 주 월요일"처럼
@@ -131,6 +136,7 @@ model User {
   dashboardLayouts DashboardLayout[]
   sidebarLayouts   SidebarLayout[]
   meetingTemplates MeetingTemplate[]
+  meetingMinutesDrafts MeetingMinutesDraft[]
 
   createdTasks          Task[]                 @relation("TaskCreator")
   taskAssignments       TaskAssignee[]
@@ -302,7 +308,18 @@ model MeetingTemplate {
   id             String              @id @default(cuid())
   name           String
   meetingType    MeetingTemplateType
+  /// Step 5B-3.2까지의 block 배열(레거시). Step 5B-3.3(Rich Text Editor)부터는
+  /// 더 이상 편집 UI가 이 값을 만들지 않지만, 컬럼 자체와 과거 데이터는
+  /// 지우지 않는다 — documentContent가 아직 없는 Row를 Editor가 열 때 이
+  /// 값을 1회성으로 문서로 변환해 보여주는 데만 쓴다
+  /// (lib/meetingTemplates/richText.ts convertBlocksToDocument).
   templateSchema String
+  /// Step 5B-3.3(Rich Text Editor) — Monday Docs 스타일 자유 문서 본문을
+  /// Tiptap/ProseMirror JSON 그대로 저장한다({type:"doc", content:[...]}).
+  /// null이면 아직 한 번도 이 Editor로 저장된 적 없는 Template(= 5B-3.2
+  /// 이전 block 기반 데이터만 있음)이라는 뜻 — 실제 내용의 Single Source of
+  /// Truth는 이 값이 채워진 뒤로는 항상 documentContent다.
+  documentContent String?
   /// 이 meetingType에서 자동 회의록 생성/초기화가 실제로 사용하는 Template인지.
   /// 같은 meetingType 안에서 true는 최대 1개만 허용된다(DB 부분 유니크 인덱스로
   /// 강제, 아래 migration 참고).
@@ -317,17 +334,82 @@ model MeetingTemplate {
   @@index([meetingType])
 }
 
+/// Step(회의록 Draft 저장/초기화 정책) — "현재 작성 중인 회의록" 자체를
+/// 처음으로 DB에 저장한다(요청사항: "새로고침/재접속 후에도 같은 작성본을
+/// 다시 불러온다"). meetingType당 정확히 1개(팀 공용 단일 작성본 — 개인별이
+/// 아니다, Template의 "활성 Template 1개" 정책과 같은 결로 @@unique 하나로
+/// 표현)만 존재하고, 자동저장(debounce)이 매번 이 Row를 덮어쓴다.
+/// documentContent가 Single Source of Truth이고 Template과는 완전히 분리된
+/// 테이블이다 — Template을 고쳐도 이 Row는 절대 자동으로 바뀌지 않는다
+/// (연결 관계 자체가 없다). `초기화` 버튼을 눌렀을 때만 활성 Template을
+/// 다시 clone해 이 Row를 덮어쓴다(lib/meetingMinutes/draft.ts
+/// resetMeetingMinutesDraftAction).
+///
+/// Step(Draft/Template 버전 비교 + 양식 변경 안내) — 실제로 재현/확인한
+/// 문제: Draft가 한 번 만들어진 뒤 Template을 고쳐도(양식 설정에서 저장)
+/// 이 Row는 "절대 자동으로 안 바뀐다" 정책 그대로 유지되기 때문에, 화면
+/// 텍스트 비교 같은 임시방편이 아니라 "이 Draft가 어느 Template을 기준으로
+/// 만들어졌는지"를 DB에 명시적으로 남겨야 나중에 "지금 활성 Template이 그때
+/// 그 버전보다 최신인지"를 안정적으로 판별할 수 있다(요청사항: "단순 화면
+/// 텍스트 비교 금지"). sourceTemplateId/sourceTemplateUpdatedAt은 이 Draft를
+/// 만들거나(최초 진입) 초기화한 시점의 활성 Template의 id/updatedAt을 그대로
+/// 복사해 둔 값이다 — 이후 그 Template Row 자체가 다시 저장되면 updatedAt이
+/// 갱신되므로 "activeTemplate.updatedAt > draft.sourceTemplateUpdatedAt"
+/// (또는 id 자체가 바뀜, 즉 다른 Template이 활성화됨)만으로 "양식이
+/// 바뀌었다"를 정확히 판별한다. 마이그레이션 이전에 이미 있던 Row는 두
+/// 값이 null인데, null은 "기준을 알 수 없음"으로 보고 안내 배너를 보여주는
+/// 쪽(더 안전한 기본값)으로 처리한다(lib/meetingMinutes/draft.ts
+/// isTemplateOutdated).
+model MeetingMinutesDraft {
+  id              String              @id @default(cuid())
+  meetingType     MeetingTemplateType @unique
+  documentContent String
+  /// 이 Draft를 만들거나 초기화한 시점의 활성 Template.id.
+  sourceTemplateId        String?
+  /// 그 시점의 활성 Template.updatedAt — 이후 Template이 다시 저장되면
+  /// updatedAt이 갱신되므로, 지금 활성 Template.updatedAt과 비교해 "그
+  /// 이후에 Template이 바뀌었는지"를 판별한다.
+  sourceTemplateUpdatedAt DateTime?
+  /// Step(V1 코드 건강도 / 안정화 점검) — 여러 사용자가 같은 team-common
+  /// Draft를 동시에 편집할 때(실시간 공동 편집은 이번 Step 범위 밖) 최소한의
+  /// 안전장치. 저장/초기화는 항상 "클라이언트가 마지막으로 읽은 version과
+  /// 지금 DB의 version이 같을 때만" 성공하고 version을 1 증가시킨다(낙관적
+  /// 동시성 제어) — 두 사용자가 동시에 편집했다면 나중에 저장을 시도하는
+  /// 쪽이 충돌을 감지하고 조용히 덮어쓰지 않는다(lib/meetingMinutes/draft.ts
+  /// saveMeetingMinutesDraftAction 참고).
+  version         Int                 @default(0)
+  updatedBy       String
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  updater User @relation(fields: [updatedBy], references: [id])
+}
+
 // ---------------- 일정관리(Schedule) ----------------
 // Task가 최상위 개념이며 일정 DB가 Single Source of Truth다. 지연 여부는 컬럼으로
 // 저장하지 않고 (dueDate < now && status != DONE)로 매 조회 시 계산한다.
 
 model Task {
-  id        String       @id @default(cuid())
+  id        String    @id @default(cuid())
   title     String
-  category  TaskCategory
+  /// Step 5B-4(사용자 정의 상태/업무구분) 이전의 레거시 컬럼 — 실사용 데이터
+  /// 보존을 위해 컬럼 자체는 지우지 않지만, NOT NULL 제약은 풀었고 새 코드는
+  /// 더 이상 이 값을 읽거나 쓰지 않는다(진짜 값은 항상 categoryOptionId).
+  category  TaskCategory?
   startDate DateTime
   dueDate   DateTime
-  status    TaskStatus   @default(TODO)
+  /// 레거시 컬럼 — status와 동일한 이유로 더 이상 쓰지 않는다(진짜 값은
+  /// statusOptionId).
+  status    TaskStatus?   @default(TODO)
+  /// Step 5B-4(사용자 정의 업무구분) — TaskCategoryOption.id를 그대로 담는다.
+  /// 시스템 예약 7종은 label이 바뀌어도 이 값(예: "PROJECT")이 고정이라 기존
+  /// TaskCategory enum이 하던 "업무구분별 분기"(PROJECT/MEETING 등) 역할을
+  /// 그대로 대신한다 — lib/schedule/constants.ts의 TASK_CATEGORY_KEY 참고.
+  categoryOptionId String
+  /// Step 5B-4(사용자 정의 상태) — TaskStatusOption.id. "TODO"/"DONE" 등 예약
+  /// 4종은 label이 바뀌어도 고정이라 지연 여부 계산(isTaskOverdue)이 계속
+  /// "DONE"만 신뢰할 수 있다.
+  statusOptionId   String
   /// Comment/Update 시스템(TaskComment) 도입 이전의 단순 메모 — 실사용 데이터가
   /// 있을 수 있어 컬럼/값을 절대 지우거나 변환하지 않는다. 새 코드는 이 필드에
   /// 더 이상 쓰지 않고("레거시 메모"로 읽기 전용 표시만), 새 업데이트/댓글은
@@ -386,6 +468,21 @@ model Task {
   recurrenceMonthlyWeekday String?
   /// 반복 종료일(그 날짜까지 포함). null이면 종료일 없음(무기한 반복).
   recurrenceEndDate DateTime?
+  /// Step(반복 일정 UX 개선) — "N회 반복" 종료 조건. null이면 횟수 제한 없음.
+  /// recurrenceEndDate와 동시에 의미를 갖지 않는다(서버가 저장 시 항상 한쪽만
+  /// 채운다 — lib/schedule/recurrence.ts의 occurrence 계산이 이 값을 그대로
+  /// count로 쓴다). 기존 Row는 전부 null이라 기존 endDate/무한반복 동작에는
+  /// 영향이 없다.
+  recurrenceCount Int?
+
+  /// Step(담당자 UX 개선) — "공통"(특정 개인 담당자 없이 의도적으로 팀 전체
+  /// 업무로 등록)과 "담당자 미지정"(assignees가 비어 있지만 그 이유가 없는
+  /// 예외 상태, 예: 이 필드 도입 이전 레거시 Row)을 시스템이 구분하기 위한
+  /// 최소 semantic 필드. 기존 Row는 전부 기본값 false로 채워져 지금까지의
+  /// "담당자 없음 → 미배정 취급" 동작을 그대로 유지한다 — 새로 "공통"을 고른
+  /// 경우에만 true가 된다. assignees(TaskAssignee)는 두 경우 모두 비어
+  /// 있으므로, 실제 구분은 반드시 이 필드로만 가능하다.
+  isCommonAssignee Boolean @default(false)
 
   creator           User                   @relation("TaskCreator", fields: [createdBy], references: [id])
   assignees         TaskAssignee[]
@@ -394,10 +491,79 @@ model Task {
   scheduleRevisions TaskScheduleRevision[]
   comments          TaskComment[]
   notifications     Notification[]
+  categoryOption    TaskCategoryOption     @relation(fields: [categoryOptionId], references: [id])
+  statusOption      TaskStatusOption       @relation(fields: [statusOptionId], references: [id])
 
   @@index([startDate])
   @@index([dueDate])
   @@index([category])
+  @@index([categoryOptionId])
+  @@index([statusOptionId])
+}
+
+/// Step 5B-4(사용자 정의 업무 구분) — 코드에 고정돼 있던 TaskCategory enum의
+/// "선택지 목록" 역할을 대신한다. 시스템 예약 7종(PROJECT/PERSONAL_GOAL/
+/// EXCEPTION/MEETING/COMMON/VACATION/HALF_DAY)은 id 자체를 그 예약 문자열로
+/// 고정해서 만든다(migration에서 직접 INSERT) — label을 사용자가 바꿔도 이
+/// id는 절대 바뀌지 않아, PROJECT/MEETING 등에 의존하는 입력폼·자동화
+/// (lib/schedule/constants.ts TASK_CATEGORY_KEY)가 계속 정상 동작한다. 사용자가
+/// 새로 추가하는 업무 구분은 cuid id를 받고, 그 id를 특별 취급하는 코드가
+/// 없으므로 자동으로 "일반(GENERIC)" 동작이 된다(요청사항). 사용 중(Task가
+/// 참조 중)인 옵션은 절대 삭제하지 않고 active=false로만 비활성화한다 —
+/// 신규 일정 dropdown에서만 숨기고 기존 Task는 그대로 표시된다.
+model TaskCategoryOption {
+  id        String   @id @default(cuid())
+  label     String
+  color     String
+  order     Int
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  /// Step 5B-9 보완(주간 파트 회의록 Preview) — 회의록 섹션 자동입력이 label
+  /// 문자열로 카테고리를 찾지 않도록, label과 완전히 독립된 안정적 식별자를
+  /// 준다. 시스템 예약 4종(PROJECT/PERSONAL_GOAL/EXCEPTION/COMMON)은 id 자체가
+  /// 이미 label과 무관한 안정 키라 이 컬럼에도 그대로 대응값을 채워 넣어
+  /// 하나의 일관된 조회 방식(meetingReportSection 기준)만 쓰게 한다. "출장
+  /// 업무"처럼 사용자가 만든 CUSTOM(cuid id) 업무구분은 이 컬럼이 없으면
+  /// label로만 식별할 수 있었는데, 이제 이 컬럼에 값을 한 번 심어 두면 label을
+  /// 나중에 바꿔도(예: "출장 업무" → "해외 출장") 회의록 자동입력이 계속 그
+  /// Row를 정확히 찾는다. Task.categoryOptionId(입력폼 분기)에는 전혀
+  /// 영향을 주지 않는 별개 목적의 컬럼이다 — 새 업무구분은 기본 null(=이번
+  /// 자동화 대상 아님)이고, 여기 UI로 사용자가 직접 설정하지는 않는다(요청사항:
+  /// 새 설정 UX 추가 금지) — 필요하면 관리자가 이후 별도 절차로 지정한다.
+  meetingReportSection MeetingReportSection?
+
+  tasks Task[]
+}
+
+/// Step 5B-9 보완 — 주간 파트 회의록 Preview가 자동입력하는 5개 섹션과 1:1
+/// 대응한다(요청사항 목록과 동일 순서). 이 값이 null이면 그 업무구분은
+/// 이번 자동화의 대상이 아니다(미팅/휴가/반차 등 시스템 예약값 포함).
+enum MeetingReportSection {
+  REGULAR_PROJECT
+  SUB_PROJECT
+  EXCEPTION
+  BUSINESS_TRIP
+  COMMON
+}
+
+/// Step 5B-4(사용자 정의 상태) — TaskCategoryOption과 동일한 설계. 예약 4종
+/// (TODO/IN_PROGRESS/DONE/ON_HOLD)은 id를 그 예약 문자열로 고정한다 — 특히
+/// "DONE"은 lib/schedule/constants.ts의 isTaskOverdue(지연 여부 계산)가 계속
+/// 신뢰하는 유일한 값이라 반드시 고정돼야 한다. 사용자가 추가하는 상태(예:
+/// "미결", "드랍")는 cuid id를 받고 지연 여부 계산에 아무 영향을 주지 않는다
+/// (완료 취급하지 않음 — 요청사항: 신규 옵션은 기본 GENERIC 동작).
+model TaskStatusOption {
+  id        String   @id @default(cuid())
+  label     String
+  color     String
+  order     Int
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tasks Task[]
 }
 
 /// 담당자 다중 지정 — 명시적 Join Table로 둬야 Step 3(History/Notification)에서
@@ -430,14 +596,46 @@ model TaskProjectDetail {
 
 /// "프로젝트 카테고리" 사용자 관리형 Master. 사용 이력(TaskProjectDetail 참조)이
 /// 있으면 삭제 대신 active=false로 비활성화하고, Dropdown에는 active만 노출한다.
-model ProjectCategory {
+/// Step 5B-5(프로젝트 카테고리 2단계 계층화) — "대분류"(예: 케이스/강화유리).
+/// ProjectCategory(중분류)만 Task가 실제로 참조하고, 이 Group은 탐색/그룹용
+/// UI 편의를 위한 것이라 Task에는 별도로 저장하지 않는다(요청사항: "Task는
+/// 기존처럼 최종 ProjectCategory id만 참조"). id는 label(name)과 분리된
+/// 안정적인 식별자라 이름을 바꿔도 하위 ProjectCategory들의 groupId 참조가
+/// 깨지지 않는다.
+model ProjectCategoryGroup {
   id        String   @id @default(cuid())
   name      String   @unique
+  order     Int      @default(0)
   active    Boolean  @default(true)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  categories ProjectCategory[]
+}
+
+model ProjectCategory {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  active    Boolean  @default(true)
+  /// Step 5B-4(색상 관리) — 기존 Row는 이 컬럼이 없던 시절 데이터라 안전한
+  /// 기본값(중립 회색)으로 채워진다. 사용자가 설정 화면에서 직접 바꿀 수 있다.
+  color     String   @default("#94a3b8")
+  /// Step 5B-4(Drag & Drop 순서) — 기존 Row는 전부 0으로 시작해 name 정렬과
+  /// 동률이라 화면상 변화가 없다가, 설정 화면에서 순서를 바꾸면 그때부터
+  /// 이 값 기준으로 정렬된다.
+  order     Int      @default(0)
+  /// Step 5B-5(2단계 계층화) — 이 중분류가 속한 대분류. 기존 Row(migration 시점)는
+  /// 전부 안전하게 "미분류" Group으로 배치된다(요청사항) — 실제로 어떤 대분류에
+  /// 속해야 하는지는 데이터만으로 단정할 수 없어 추측 배치하지 않고, ADMIN이
+  /// 설정 화면에서 "다른 대분류로 이동"으로 정리하게 한다.
+  groupId   String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  group          ProjectCategoryGroup @relation(fields: [groupId], references: [id])
   projectDetails TaskProjectDetail[]
+
+  @@index([groupId])
 }
 
 /// 업무 구분 = MEETING일 때만 존재하는 1:1 상세. department(참석 부서)는 현재 User에
@@ -446,6 +644,13 @@ model TaskMeetingDetail {
   taskId     String    @id
   department String?
   time       DateTime?
+  /// Step 5B-7(미팅 반복 UX + 시작/종료시간) — 회차별 자동 상태 계산(예정/
+  /// 진행중/완료)에 필요해 추가한다. nullable인 이유는 이 컬럼이 생기기 전에
+  /// 만들어진 기존 MEETING Row를 보호하기 위함이다(실제로는 현재 DB에 MEETING
+  /// Row가 0건이라 백필 대상 자체가 없었다) — 새로 만들거나 수정하는 미팅은
+  /// 항상 값이 채워지도록 폼에서 필수로 받는다. null이면(레거시) 자동 상태
+  /// 계산을 건너뛰고 저장된 statusOptionId를 그대로 신뢰한다(회귀 방지).
+  endTime    DateTime?
   location   String?
 
   task      Task                  @relation(fields: [taskId], references: [id], onDelete: Cascade)

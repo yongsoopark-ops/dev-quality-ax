@@ -1,31 +1,16 @@
 import { redirect } from "next/navigation";
-import { auth } from "@/auth";
-import { listMeetingTemplatesAction } from "@/lib/meetingTemplates/actions";
-import { MeetingTemplateManager } from "./MeetingTemplateManager";
 
 /**
- * Step 5B-3 — ADMIN 전용 회의록 Template 관리 화면. Sidebar에서 MEMBER에게는
- * 메뉴 자체가 보이지 않지만(lib/sidebar/sidebarConfig.ts의 requiredRole),
- * URL을 직접 알아도 접근하지 못하도록 서버에서도 다시 확인한다 —
- * app/(shell)/admin/layout.tsx와 동일한 패턴.
+ * Meeting Minutes 통합 Step — "회의록 Template"과 "회의록 Preview"가 하나의
+ * "/meeting-minutes" 화면(작성 모드 ↔ 양식 설정 모드)으로 합쳐졌다(요청사항:
+ * "중복 기능을 두 개 유지하지 말 것"). 이 Route는 제거하지 않고 새 통합
+ * 화면으로 리다이렉트만 한다 — 기존에 이 URL을 즐겨찾기/공유해 둔 사용자가
+ * 있어도 깨지지 않는다. 실제 화면/Component/Server Action(MeetingTemplateManager,
+ * TemplateEditor, lib/meetingTemplates/actions.ts)은 전혀 삭제하지 않고 그대로
+ * "/meeting-minutes"가 import해서 재사용한다(app/(shell)/meeting-minutes/
+ * MeetingMinutesWorkspace.tsx 참고) — ADMIN 전용 권한 검사도 그 Server
+ * Action들 안에서 그대로 유지된다.
  */
-export default async function MeetingTemplatesPage() {
-  const session = await auth();
-  if (!session?.user || session.user.role !== "ADMIN") {
-    redirect("/home");
-  }
-
-  const res = await listMeetingTemplatesAction();
-
-  return (
-    <div className="flex h-dvh min-h-[560px] flex-col overflow-hidden p-8">
-      <div className="shrink-0">
-        <h1 className="text-lg font-semibold text-navy-950">회의록 Template</h1>
-        <p className="mt-1 text-sm text-navy-950/60">회의 유형별 회의록 양식을 관리합니다.</p>
-      </div>
-      <div className="mt-6 min-h-0 flex-1 overflow-y-auto">
-        <MeetingTemplateManager initialTemplates={res.templates ?? []} initialError={res.templates ? null : (res.error ?? "Template 목록을 불러오지 못했습니다.")} />
-      </div>
-    </div>
-  );
+export default function MeetingTemplatesLegacyRedirect() {
+  redirect("/meeting-minutes");
 }

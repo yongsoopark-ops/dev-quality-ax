@@ -1,5 +1,5 @@
 import { differenceInCalendarDays } from "date-fns";
-import { TaskCategory } from "@/app/generated/prisma/enums";
+import { TASK_CATEGORY_KEY as TaskCategory } from "@/lib/schedule/constants";
 import { computeRecurringOccurrenceDates } from "@/lib/schedule/recurrence";
 import type { TaskWithRelations } from "@/lib/schedule/types";
 
