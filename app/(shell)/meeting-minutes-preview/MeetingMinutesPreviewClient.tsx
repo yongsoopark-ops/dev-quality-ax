@@ -44,7 +44,16 @@ function OverflowMenu({ children }: { children: React.ReactNode }) {
         ⋯
       </button>
       {open && (
-        <div className="absolute right-0 top-full z-20 mt-1 min-w-[120px] rounded-lg border border-navy-100 bg-white p-1 shadow-lg" onClick={() => setOpen(false)}>
+        // Hotfix(⋯ 메뉴 클릭 무반응) — 실제 원인은 trigger/state가 아니라
+        // z-index 충돌이었다: 바로 아래(space-y-4의 다음 형제)에 오는
+        // TemplateRichTextEditor의 Toolbar가 `sticky ... z-20`이라(App
+        // Header z-30보다 낮게 고정한 값 — TemplateRichTextEditor.tsx 참고),
+        // 같은 z-20인 이 메뉴와 같은 화면 영역에서 겹칠 때 DOM 순서상 나중에
+        // 오는 Toolbar가 항상 위에 그려져 메뉴를 완전히 가렸다(open state 자체는
+        // 정상 토글됨 — DOM에는 렌더링되지만 시각적으로만 보이지 않았다).
+        // 같은 Toolbar를 피해야 하는 LinkPopup(TemplateRichTextEditor.tsx)도
+        // 이미 z-30을 쓰고 있어, 그 기존 패턴을 그대로 따른다.
+        <div className="absolute right-0 top-full z-30 mt-1 min-w-[120px] rounded-lg border border-navy-100 bg-white p-1 shadow-lg" onClick={() => setOpen(false)}>
           {children}
         </div>
       )}
