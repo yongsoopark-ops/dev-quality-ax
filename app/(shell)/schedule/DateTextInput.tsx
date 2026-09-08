@@ -20,6 +20,14 @@ import { DatePickerCalendar } from "./DatePickerCalendar";
  * Popover가 뜨고, 거기서 고른 날짜가 같은 onChange로 그대로 올라간다.
  * ScheduleFilterBar.tsx의 FilterTrigger와 같은 click-outside-to-close
  * 패턴을 그대로 재사용한다.
+ *
+ * Step(시작/마감일 Date Picker 범위 선택 UX 추가) — `range` prop을 넘긴
+ * 인스턴스는(TaskDetailPanel.tsx의 시작일/마감일 두 입력) 자기 캘린더를
+ * DatePickerCalendar의 range 모드로 연다 — 시작/마감 어느 쪽 아이콘을
+ * 눌러도 "같은" Range Picker가 열리고 둘 다 갱신된다(요청사항 7). range를
+ * 안 넘기는 기존 호출부(회의일, 일정 변경 시작/마감일)는 이전과 완전히
+ * 동일한 단일 날짜 Picker로 동작한다 — 이 컴포넌트 자체의 시각/레이아웃도
+ * 전혀 바뀌지 않는다.
  */
 export function DateTextInput({
   value,
@@ -27,16 +35,49 @@ export function DateTextInput({
   required,
   disabled,
   className,
+  range,
 }: {
   value: string;
   onChange: (value: string) => void;
   required?: boolean;
   disabled?: boolean;
   className?: string;
+  /** 이 입력을 "시작일/마감일 쌍" 중 하나로 취급해 Range Picker를 연다. */
+  range?: {
+    /** 이 입력이 시작일인지 마감일인지 — 반대쪽 값과 합쳐 range를 구성한다. */
+    role: "start" | "end";
+    /** 짝이 되는 반대쪽 날짜의 현재 값("YYYY-MM-DD" 또는 빈 문자열). */
+    companionValue: string;
+    /** 범위가 확정되면(2번째 클릭) (시작일, 마감일) 둘 다로 한 번 호출된다
+     * — 부모가 두 state를 함께 갱신한다. */
+    onRangeChange: (startDate: string, endDate: string) => void;
+  };
 }) {
   const [digits, setDigits] = useState(() => value.replace(/\D/g, "").slice(0, 8));
   const [pickerOpen, setPickerOpen] = useState(false);
   const wrapperRef = useRef<HTMLSpanElement>(null);
+
+  // Step(시작/마감일 Date Picker 범위 선택 UX 추가) — range 모드에서는 이
+  // 입력의 value가 "반대쪽" DateTextInput의 Range Picker 선택으로(이
+  // 컴포넌트 자신의 onChange를 거치지 않고) 외부에서 바뀔 수 있다. 기존
+  // 코드는 digits를 마운트 시 한 번만 value로 초기화했기 때문에 그런
+  // 외부 갱신을 놓쳤다 — 그래서 value가 실제로 바뀌면 digits를 다시
+  // 맞춘다. React 공식 권장대로 "prop이 바뀌면 파생 state를 조정"하는
+  // 작업은 useEffect가 아니라 렌더 중 비교로 처리한다(react-hooks/
+  // set-state-in-effect 룰 — effect 안에서 무조건 setState를 부르면
+  // 불필요한 추가 렌더가 생긴다). 단, 사용자가 이 입력에 8자리 미만을
+  // 타이핑 중일 때는 이 컴포넌트 자신의 handleChange가 부모에
+  // onChange("")를 올려 value가 일시적으로 ""가 되므로, 그 순간(value가
+  // 빈 값)에는 절대 손대지 않는다 — 그렇지 않으면 입력 중이던 숫자가
+  // 지워지는 회귀가 생긴다.
+  const [prevValue, setPrevValue] = useState(value);
+  if (value !== prevValue) {
+    setPrevValue(value);
+    if (value) {
+      const incoming = value.replace(/\D/g, "").slice(0, 8);
+      if (incoming !== digits) setDigits(incoming);
+    }
+  }
 
   useEffect(() => {
     if (!pickerOpen) return;
@@ -63,6 +104,17 @@ export function DateTextInput({
   function handlePickerSelect(dateStr: string) {
     setDigits(dateStr.replace(/-/g, ""));
     onChange(dateStr);
+    setPickerOpen(false);
+  }
+
+  /** Range Picker에서 범위가 확정되면(시작/마감 둘 다) 호출된다. 이 입력
+   * 자신이 담당하는 쪽(role) 값만 자기 digits에 반영한다 — 반대쪽
+   * DateTextInput 인스턴스는 자기 자신의 value prop 변화를 위 렌더 중
+   * 비교 로직이 감지해 알아서 맞춘다. */
+  function handleRangeSelect(startDate: string, endDate: string, r: NonNullable<typeof range>) {
+    const mine = r.role === "start" ? startDate : endDate;
+    setDigits(mine.replace(/-/g, ""));
+    r.onRangeChange(startDate, endDate);
     setPickerOpen(false);
   }
 
@@ -96,7 +148,18 @@ export function DateTextInput({
       >
         📅
       </button>
-      {pickerOpen && <DatePickerCalendar value={isoValue} onSelect={handlePickerSelect} />}
+      {pickerOpen &&
+        (range ? (
+          <DatePickerCalendar
+            range={{
+              startDate: range.role === "start" ? isoValue : range.companionValue,
+              endDate: range.role === "end" ? isoValue : range.companionValue,
+              onRangeSelect: (s, e) => handleRangeSelect(s, e, range),
+            }}
+          />
+        ) : (
+          <DatePickerCalendar value={isoValue} onSelect={handlePickerSelect} />
+        ))}
     </span>
   );
 }

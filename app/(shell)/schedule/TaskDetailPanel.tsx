@@ -829,6 +829,13 @@ export function TaskDetailPanel({
     setInput((prev) => ({ ...prev, [key]: value }));
   }
 
+  /** Step(시작/마감일 Date Picker 범위 선택 UX 추가) — Range Picker가 시작일/
+   * 마감일을 한 번에 확정할 때 쓴다. `set`을 두 번 연달아 부르는 대신 하나의
+   * setInput 호출로 합쳐서, 두 필드가 항상 같은 렌더에서 함께 갱신되게 한다. */
+  function setDateRange(startDate: string, dueDate: string) {
+    setInput((prev) => ({ ...prev, startDate, dueDate }));
+  }
+
   const isMeeting = input.category === TaskCategory.MEETING;
 
   // Step 5B-7(반복 미팅 anchor 자동 계산) — "미팅 날짜 + 반복 규칙"을 이중으로
@@ -1127,12 +1134,18 @@ export function TaskDetailPanel({
           {!isMeeting && (
             <FormRow label="시작/마감일">
               <div className="flex items-center gap-2">
+                {/* Step(시작/마감일 Date Picker 범위 선택 UX 추가) — 배치(입력칸
+                    2개 + 화살표 + 아이콘 2개)는 그대로 두고, 두 DateTextInput에
+                    range prop만 추가해 어느 쪽 📅를 눌러도 같은 Range Picker가
+                    열리게 한다(요청사항 7) — onRangeChange는 시작/마감 둘 다를
+                    한 번에 갱신해 순서 문제 없이 반영한다. */}
                 <DateTextInput
                   className={inputClass}
                   value={input.startDate}
                   onChange={(v) => set("startDate", v)}
                   disabled={savedRevisions.length > 0}
                   required
+                  range={{ role: "start", companionValue: input.dueDate, onRangeChange: setDateRange }}
                 />
                 <span className="shrink-0 text-navy-950/30">→</span>
                 <DateTextInput
@@ -1141,6 +1154,7 @@ export function TaskDetailPanel({
                   onChange={(v) => set("dueDate", v)}
                   disabled={savedRevisions.length > 0}
                   required
+                  range={{ role: "end", companionValue: input.startDate, onRangeChange: setDateRange }}
                 />
               </div>
               {savedRevisions.length > 0 && (

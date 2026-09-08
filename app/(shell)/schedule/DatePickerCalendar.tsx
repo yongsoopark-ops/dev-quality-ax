@@ -20,17 +20,46 @@ import { getHolidayName } from "@/lib/schedule/holidays";
  * 와 같은 "click-outside-to-close" Popover 패턴은 이 컴포넌트를 감싸는
  * DateTextInput.tsx 쪽에서 처리한다 — 여기서는 그리드 렌더링과 날짜 선택만
  * 담당한다.
+ *
+ * Step(시작/마감일 Date Picker 범위 선택 UX 추가) — 새 컴포넌트/라이브러리를
+ * 만들지 않고 이 컴포넌트를 그대로 확장했다: `range` prop을 안 넘기면
+ * 기존 단일 날짜 선택(meetingDate, 일정 변경 시작/마감일 등)과 완전히
+ * 동일하게 동작하고(회귀 없음), `range`를 넘기면 같은 그리드/색 규칙
+ * 위에서 "시작일 클릭 → 마감일 대기 → 마감일 클릭" 2단계 범위 선택으로
+ * 동작한다. 두 모드가 그리드 렌더링·공휴일/주말 판정 로직을 그대로
+ * 공유하므로 별도 컴포넌트로 분리하지 않았다.
  */
 export function DatePickerCalendar({
   value,
   onSelect,
+  range,
 }: {
-  /** "YYYY-MM-DD" 또는 빈 문자열(아직 선택 안 됨). */
-  value: string;
-  onSelect: (dateStr: string) => void;
+  /** 단일 날짜 모드: "YYYY-MM-DD" 또는 빈 문자열(아직 선택 안 됨). range를
+   * 넘기면 이 값은 무시된다. */
+  value?: string;
+  onSelect?: (dateStr: string) => void;
+  /** 범위 선택 모드 — 시작/마감일 쌍을 이 캘린더 하나로 고른다. */
+  range?: {
+    /** 이미 확정된 시작/마감일("YYYY-MM-DD" 또는 빈 문자열) — 캘린더를 열자마자
+     * 이 범위를 그대로 보여준다. */
+    startDate: string;
+    endDate: string;
+    /** 두 번째 클릭으로 범위가 확정될 때 한 번 호출된다. */
+    onRangeSelect: (startDate: string, endDate: string) => void;
+  };
 }) {
   const parsedValue = value ? new Date(`${value}T00:00:00`) : null;
-  const [viewMonth, setViewMonth] = useState(() => startOfMonth(parsedValue ?? new Date()));
+  const rangeStartDate = range?.startDate ? new Date(`${range.startDate}T00:00:00`) : null;
+  const rangeEndDate = range?.endDate ? new Date(`${range.endDate}T00:00:00`) : null;
+
+  // 범위 선택 중 "첫 번째 클릭(시작일) ~ 두 번째 클릭 대기" 상태 — 이미
+  // 확정된 range.startDate/endDate와는 완전히 별개다(요청사항: 캘린더를
+  // 열면 기존 범위를 그대로 보여주되, 새로 클릭하면 그 순간부터 새
+  // 선택으로 취급한다). null이면 "아직 새로 클릭한 적 없음".
+  const [pendingStart, setPendingStart] = useState<Date | null>(null);
+
+  const initialAnchor = range ? (rangeStartDate ?? new Date()) : (parsedValue ?? new Date());
+  const [viewMonth, setViewMonth] = useState(() => startOfMonth(initialAnchor));
 
   // Step(Final UI Fix — Date Picker 일요일 시작) — 한 차례 Month View(월요일
   // 시작)와 통일했었으나, 사용자 요청으로 다시 일요일 시작(date-fns 기본값,
@@ -47,19 +76,48 @@ export function DatePickerCalendar({
     return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
   }
 
+  function handleDayClick(d: Date, dateStr: string) {
+    if (!range) {
+      onSelect?.(dateStr);
+      return;
+    }
+    if (!pendingStart) {
+      // 첫 번째 클릭 — 새로운 시작일, 마감일 선택 대기 상태로 전환한다.
+      // 캘린더는 닫지 않는다(부모는 onRangeSelect가 호출될 때만 닫는다).
+      setPendingStart(d);
+      return;
+    }
+    if (d < pendingStart) {
+      // 요청사항 5 — 시작일보다 이전 날짜를 두 번째로 클릭하면 자동으로
+      // 뒤집지 않고, 그 날짜를 "새로운 시작일"로 다시 설정한 뒤 마감일
+      // 선택 대기를 유지한다 — 사용자가 선택 순서를 그대로 이해할 수 있게.
+      setPendingStart(d);
+      return;
+    }
+    // 두 번째 클릭 확정(같은 날짜를 다시 클릭한 경우 포함 — 요청사항 4:
+    // 시작일=마감일인 1일 일정도 허용).
+    const startStr = toDateStr(pendingStart);
+    setPendingStart(null);
+    range.onRangeSelect(startStr, dateStr);
+  }
+
   /** !inMonth(다른 달 overflow 칸)는 "흐림" 여부일 뿐 색 자체와는 별개
    * 조건이다 — Month View(MonthDateHeader)가 이미 쓰는 방식과 같다:
    * off-range는 opacity만 낮추고 토/일/공휴일 빨간색은 그대로 유지한다.
    * 처음엔 우선순위 분기(!inMonth를 red보다 먼저 확인)로 짰다가, 다른
    * 달로 넘어간 공휴일(예: 다음 달 1일 개천절)이 흐리기만 하고 빨간색이
-   * 빠지는 걸 실측으로 발견해 "흐림"과 "색"을 독립된 축으로 분리했다. */
-  function dayButtonClassName(inMonth: boolean, isRedDay: boolean, isSelected: boolean, isToday: boolean): string {
+   * 빠지는 걸 실측으로 발견해 "흐림"과 "색"을 독립된 축으로 분리했다.
+   * isInRangeMiddle(요청사항 6 — 시작/마감 "사이" 날짜는 연한 배경)은
+   * isSelected(강한 강조)와 겹치지 않는 날짜에만 별도 배경을 얹는다 —
+   * 토·일·공휴일 텍스트 색은 그 위에서도 그대로 유지된다. */
+  function dayButtonClassName(inMonth: boolean, isRedDay: boolean, isSelected: boolean, isToday: boolean, isInRangeMiddle: boolean): string {
     const base = "rounded py-1 text-xs transition-colors";
     if (isSelected) return `${base} bg-navy-900 font-semibold text-white`;
-    if (isToday) return `${base} border border-blue-500 font-semibold text-blue-600 hover:bg-blue-50`;
+    const rangeBg = isInRangeMiddle ? "bg-navy-100/70" : "";
+    if (isToday) return `${base} ${rangeBg} border border-blue-500 font-semibold text-blue-600 hover:bg-blue-50`;
     const colorClass = isRedDay ? "text-red-500" : "text-navy-950/80";
     const opacityClass = inMonth ? "" : "opacity-40";
-    return `${base} ${colorClass} ${opacityClass} hover:bg-navy-50`;
+    return `${base} ${rangeBg} ${colorClass} ${opacityClass} hover:bg-navy-50`;
   }
 
   return (
@@ -81,6 +139,11 @@ export function DatePickerCalendar({
         </button>
       </div>
 
+      {/* 요청사항 3 — 첫 번째 클릭 후 "마감일을 선택하세요" 짧은 보조 표시.
+          range 모드가 아니거나 아직 첫 클릭 전이면 렌더하지 않는다(레이아웃을
+          평소엔 그대로 유지). */}
+      {range && pendingStart && <p className="mb-1 text-[10px] font-medium text-navy-600">마감일을 선택하세요</p>}
+
       <div className="grid grid-cols-7 gap-0.5 pb-1 text-center text-[10px] font-medium text-navy-950/40">
         {["일", "월", "화", "수", "목", "금", "토"].map((w, i) => (
           <div key={w} className={i === 0 || i === 6 ? "text-red-500" : undefined}>
@@ -99,16 +162,32 @@ export function DatePickerCalendar({
           // View의 기존 헤더 배색(토=파랑)과는 별개로, 이 Date Picker는
           // 이번 요청사항이 명시한 대로 주말 둘 다 빨간색으로 통일한다.
           const isRedDay = weekday === 0 || weekday === 6 || !!holidayName;
-          const isSelected = !!parsedValue && isSameDay(d, parsedValue);
           const isToday = isSameDay(d, today);
+
+          let isSelected: boolean;
+          let isInRangeMiddle = false;
+          if (range) {
+            if (pendingStart) {
+              // 두 번째 클릭 대기 중에는 새로 찍은 시작일만 강조한다 — 이미
+              // 확정돼 있던 이전 범위 강조는 새 선택이 끝날 때까지 감춘다.
+              isSelected = isSameDay(d, pendingStart);
+            } else {
+              const isRangeStart = !!rangeStartDate && isSameDay(d, rangeStartDate);
+              const isRangeEnd = !!rangeEndDate && isSameDay(d, rangeEndDate);
+              isSelected = isRangeStart || isRangeEnd;
+              isInRangeMiddle = !!rangeStartDate && !!rangeEndDate && d > rangeStartDate && d < rangeEndDate;
+            }
+          } else {
+            isSelected = !!parsedValue && isSameDay(d, parsedValue);
+          }
 
           return (
             <button
               key={dateStr}
               type="button"
               title={holidayName ?? undefined}
-              onClick={() => onSelect(dateStr)}
-              className={dayButtonClassName(inMonth, isRedDay, isSelected, isToday)}
+              onClick={() => handleDayClick(d, dateStr)}
+              className={dayButtonClassName(inMonth, isRedDay, isSelected, isToday, isInRangeMiddle)}
             >
               {d.getDate()}
             </button>
