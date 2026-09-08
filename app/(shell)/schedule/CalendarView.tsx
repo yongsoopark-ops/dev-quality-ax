@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Calendar, dateFnsLocalizer, type DateHeaderProps, type SlotInfo, type View } from "react-big-calendar";
 import withDragAndDrop, { type EventInteractionArgs } from "react-big-calendar/lib/addons/dragAndDrop";
 import { addDays, format, getDay, isSameDay, parse, startOfWeek } from "date-fns";
@@ -22,6 +22,7 @@ import type { ProjectCategoryOption, ScheduleOptionInfo, ScheduleUser, TaskWithR
 import { updateTaskDatesAction } from "./actions";
 import { CalendarToolbar } from "./CalendarToolbar";
 import { CustomWeekView, WeekViewUsersContext } from "./CustomWeekView";
+import { MonthOverflowFallback } from "./MonthOverflowFallback";
 import { ScheduleFilterBar } from "./ScheduleFilterBar";
 
 /**
@@ -148,6 +149,10 @@ export function CalendarView({
   const [date, setDate] = useState<Date>(new Date());
   const [filters, setFilters] = useState<ScheduleFilters>(EMPTY_SCHEDULE_FILTERS);
   const [dragError, setDragError] = useState<string | null>(null);
+  // Step(Final Fix — Month 더보기 강제 보장) — MonthOverflowFallback이 이
+  // 컨테이너 DOM을 매번 다시 스캔해 "라이브러리가 놓친 숨겨진 일정"을
+  // 찾는다(위 컴포넌트 주석 참고).
+  const calendarContainerRef = useRef<HTMLDivElement>(null);
 
   // Drag/Resize 낙관적 표시를 위한 override만 별도로 들고, tasks 자체는 복제하지
   // 않는다. Server Action의 revalidatePath로 새 tasks prop이 도착하면(결국 서버가
@@ -259,20 +264,63 @@ export function CalendarView({
         .rbc-event-content { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .rbc-event { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .rbc-row-segment { overflow: hidden; }
-        /* Hotfix(Month View "+N 더보기" clipping) 안전망 — 위 두 CSS(boxShadow
-           전환, margin 제거)로 react-big-calendar의 row-limit 측정 오차를
-           많이 줄였지만, 한 주에 겹치는 일정 종류(level)가 3개 이상이면
-           여전히 실제 렌더 높이가 계산값을 약간 넘을 수 있다(라이브러리
-           내부 측정 로직 자체의 한계 — DateContentRow.getRowLimit이 보이지
-           않는 더미 Bar 1개로만 "한 줄 높이"를 재고, 그 값을 모든 level에
-           동일하게 곱해 예산을 세운다). 남는 오차가 있을 때 "+N 더보기"
-           문구 자체가 잘리면 안 되므로(요청사항: "+N 더보기는 cell 내부에
-           항상 완전히 표시"), 그 문구를 담은 row만 이 cell의 맨 아래에
-           고정한다 — 넘치는 일정 Bar가 있다면 그 Bar 쪽이(이미 "+N"
-           숫자에 포함되어 있으므로) 대신 가려지고, 더보기 문구는 항상
-           끝까지 보인다. */
-        .rbc-row-content { position: relative; }
-        .rbc-row:has(> .rbc-row-segment > .rbc-show-more) { position: absolute; left: 0; right: 0; bottom: 0; }
+        /* Step(Final UI Fix — Month 더보기 전용 영역 확보) — 이전 hotfix는
+           "+N 더보기" row를 absolute로 cell 맨 아래에 얹는 방식이었는데,
+           그 자리에 이미 넘쳐 있는(overflow:visible이라 안 잘리고 그대로
+           그려지는) 일정 Bar 위에 그냥 겹쳐 덮는 것이었다 — 그래서 실제로는
+           "+N 더보기"와 일정 Bar가 같은 픽셀을 두고 겹쳐 보였다(요청사항이
+           지적한 문제 그대로).
+           실제 원인을 다시 실측: react-big-calendar는 한 달 전체에 쓸
+           "주당 몇 줄"(rowLimit)을 이번 달 첫 주(week[0]) 하나만 측정해서
+           모든 주에 똑같이 적용한다(DateContentRow.getRowLimit, Month.js
+           measureRowLimit 소스 확인). 공휴일 주처럼 날짜 헤더가 2줄로
+           길어지는 주는 실제 그 주의 이벤트 영역이 더 좁은데도 다른 주와
+           같은 rowLimit을 그대로 받아 실제 필요한 높이가 그 주의 실제
+           박스보다 커진다 — 그 초과분을 .rbc-row-content(overflow:visible)
+           가 그대로 그려버리고 .rbc-month-row(overflow:hidden)가 그
+           그림을 자기 박스 경계에서 자르기만 할 뿐, "더보기 한 줄만큼의
+           빈 공간"은 애초에 아무도 확보해주지 않는다.
+           그래서 "일정 Bar 위에 덮어씌우는 방식"이 아니라, 일정이 실제로
+           그려지는 영역 자체를 CSS만으로 진짜 줄여 "더보기 전용 줄"을
+           진짜 layout으로 확보한다 — 단, 모든 주에 무조건 예약해두면
+           (실측 확인) 원래 여유가 빠듯한 주(예: 헤더가 2줄인 공휴일 주)는
+           이미 딱 맞게 보이던 일정 Bar까지 불필요하게 더 줄어드는 부작용이
+           있었다. 그래서 이 예약(overflow:hidden + padding-bottom)은
+           MonthOverflowFallback.tsx가 "이 주는 실제로 +N이 필요하다"고
+           판단한 주에만 .rbc-month-row에 붙이는 data-more-slot 속성을
+           통해서만 켜진다 — 필요 없는 주는 원래 렌더링 그대로 손대지
+           않는다. 넘치는 일정 Bar는(정책대로) 그 확보된 줄의 경계에서
+           깔끔하게 잘리고, native .rbc-show-more row와 우리 custom
+           fallback 배지는 둘 다 이 여백 안에만(bottom:0) 고정되므로
+           구조적으로 절대 겹칠 수 없다. react-big-calendar 내부 코드는
+           전혀 patch하지 않았다 — 이미 라이브러리가 만들어 둔
+           DOM/className을 대상으로 한 CSS 배치일 뿐이다. */
+        .rbc-month-view .rbc-row-content:not(.rbc-row-content-scrollable) {
+          height: 100%;
+          box-sizing: border-box;
+          display: flex;
+          flex-direction: column;
+        }
+        .rbc-month-view .rbc-row-content > .rbc-row:first-child { flex: 0 0 auto; }
+        .rbc-month-view .rbc-addons-dnd-row-body {
+          position: relative;
+          flex: 1 1 auto;
+          min-height: 0;
+          box-sizing: border-box;
+          overflow: hidden;
+        }
+        /* MonthOverflowFallback.tsx의 MORE_SLOT_HEIGHT와 반드시 같은 값을
+           유지해야 한다 — 하나를 바꾸면 다른 하나도 같이 바꿀 것. */
+        .rbc-month-view .rbc-month-row[data-more-slot="1"] .rbc-addons-dnd-row-body {
+          padding-bottom: 16px;
+        }
+        .rbc-month-view .rbc-addons-dnd-row-body > .rbc-row:has(> .rbc-row-segment > .rbc-show-more) {
+          position: absolute;
+          left: 0;
+          right: 0;
+          bottom: 0;
+          height: 16px;
+        }
         /* Task Bar를 compact/저채도로(요청사항 9) — 높이/여백을 줄이고 radius를
            작게 준다. Month은 RBC가 여러 주(row)에 걸친 이벤트를 각 주마다 별도
            segment로 나눠 그리므로, 연속된 하나의 막대처럼 보이려면(요청사항 10)
@@ -355,7 +403,7 @@ export function CalendarView({
         .rbc-off-range-bg { background-color: transparent; }
         .rbc-off-range { opacity: 0.45; }
       `}</style>
-      <div className="min-h-0 flex-1">
+      <div ref={calendarContainerRef} className="relative min-h-0 flex-1">
         <WeekViewUsersContext.Provider
           value={{
             users,
@@ -446,6 +494,7 @@ export function CalendarView({
             style={{ height: "100%" }}
           />
         </WeekViewUsersContext.Provider>
+        <MonthOverflowFallback containerRef={calendarContainerRef} events={events} view={view} date={date} onSelectTask={onSelectTask} />
       </div>
     </div>
   );
