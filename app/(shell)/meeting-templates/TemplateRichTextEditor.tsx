@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { EditorContent, useEditor, useEditorState, type Editor, type JSONContent } from "@tiptap/react";
 import { Extension } from "@tiptap/core";
+import type { ResolvedPos } from "@tiptap/pm/model";
 import { Plugin, PluginKey, type Transaction } from "@tiptap/pm/state";
 import StarterKit from "@tiptap/starter-kit";
 import Placeholder from "@tiptap/extension-placeholder";
@@ -10,6 +11,8 @@ import { Color, FontSize, TextStyle } from "@tiptap/extension-text-style";
 import { TableKit } from "@tiptap/extension-table";
 import { TaskItem, TaskList } from "@tiptap/extension-list";
 import TextAlign from "@tiptap/extension-text-align";
+import { AGENDA_DONE_LABEL } from "@/lib/meetingMinutes/agendaStatus";
+import { MEETING_FIELD_KEY } from "@/lib/meetingMinutes/fieldSemantics";
 import { EMPTY_DOCUMENT_CONTENT } from "@/lib/meetingTemplates/richText";
 
 /**
@@ -213,6 +216,124 @@ const TableRoleAttribute = Extension.create({
     return [createStickyAttributePlugin("tableRoleSticky", ["table"], "tableRole")];
   },
 });
+
+/**
+ * Step(Schedule/Meeting Minutes V1.1 사용성 개선 — 미결 안건 이월) — "안건
+ * N" H3 heading에 "사용자에게 보이지 않는 내부 attribute"(pendingAgendaId)
+ * 를 붙인다. "미결 안건 불러오기"가 MeetingMinutesPendingAgenda Row 하나를
+ * 문서에 삽입할 때 그 Row의 id를 이 값으로 심어 두고(lib/meetingMinutes/
+ * pendingAgenda.ts insertPendingAgendaBlocks), 재클릭 시 문서 안에 이미
+ * 있는 id는 건너뛰어 중복 삽입을 막는 데 쓴다. fieldKey/meetingSection과
+ * 완전히 같은 패턴(addGlobalAttributes + sticky 보존)이라, 이 heading을
+ * 다시 타이핑하거나 문서를 저장/재로드해도 값이 사라지지 않는다(실제
+ * 저장→재로드 라운드트립으로 검증 — 완료 보고 참고).
+ */
+const PendingAgendaIdAttribute = Extension.create({
+  name: "pendingAgendaIdAttribute",
+  addGlobalAttributes() {
+    return [
+      {
+        types: ["heading"],
+        attributes: {
+          pendingAgendaId: {
+            default: null,
+            parseHTML: (element: HTMLElement) => element.getAttribute("data-pending-agenda-id"),
+            renderHTML: (attributes: Record<string, unknown>) => {
+              const value = attributes.pendingAgendaId;
+              return value ? { "data-pending-agenda-id": value } : {};
+            },
+          },
+        },
+      },
+    ];
+  },
+  addProseMirrorPlugins() {
+    return [createStickyAttributePlugin("pendingAgendaIdSticky", ["heading"], "pendingAgendaId")];
+  },
+});
+
+/**
+ * Step(Schedule/Meeting Minutes V1.1 사용성 개선 — 주요 안건 완료/미결) —
+ * 실제 DB를 조회해 확인한 결과 "완료 여부" 값 셀은 인터랙티브 체크박스가
+ * 아니라 그냥 고정 텍스트("☐")였다(클릭해도 반응 없던 원인). 체크박스
+ * 표현을 없애고, 커서가 그 셀 안에 있을 때만 나타나는 "완료 | 미결"
+ * 2-way segmented control로 바꾼다 — 셀 자체는 여전히 평범한 tableCell 안
+ * paragraph 텍스트라(새 Tiptap Node/NodeView를 만들지 않는다) 문서 구조도
+ * DOCX 변환(docx.ts는 셀 텍스트를 그대로 옮길 뿐)도 전혀 바뀌지 않는다.
+ */
+/** fieldKey는 라벨 셀(첫 칸, "완료 여부")에만 붙어 있고 값 셀(둘째 칸,
+ * "완료"|"미결" 텍스트)에는 없다(fieldSemantics.ts와 완전히 같은 관례 —
+ * "라벨 | 값"이 한 행의 인접한 두 칸). 그래서 커서 조상 중 tableCell이
+ * 아니라 tableRow를 찾아, 그 행의 첫 칸이 AGENDA_DONE인지로 판별한다 —
+ * 커서가 라벨/값 어느 칸에 있어도(둘 다 같은 행이므로) 똑같이 동작한다. */
+function findAgendaDoneRowDepth($from: ResolvedPos): number | null {
+  for (let depth = $from.depth; depth >= 0; depth--) {
+    const node = $from.node(depth);
+    if (node.type.name === "tableRow" && node.childCount >= 2 && node.child(0).attrs.fieldKey === MEETING_FIELD_KEY.AGENDA_DONE) {
+      return depth;
+    }
+  }
+  return null;
+}
+
+function AgendaDoneToggle({ editor }: { editor: Editor }) {
+  const state = useEditorState({
+    editor,
+    selector: ({ editor }) => {
+      const { $from } = editor.state.selection;
+      const depth = findAgendaDoneRowDepth($from);
+      if (depth === null) return { active: false, current: "" };
+      return { active: true, current: $from.node(depth).child(1).textContent.trim() };
+    },
+  });
+
+  function setStatus(label: string) {
+    editor
+      .chain()
+      .focus()
+      .command(({ tr, state }) => {
+        const { $from } = state.selection;
+        const depth = findAgendaDoneRowDepth($from);
+        if (depth === null) return false;
+        const rowNode = $from.node(depth);
+        const rowStart = $from.before(depth); // row 노드가 시작하는 위치(여는 토큰 자리)
+        const labelCellNode = rowNode.child(0);
+        const valueCellNode = rowNode.child(1);
+        const valueCellStart = rowStart + 1 + labelCellNode.nodeSize; // 라벨 셀 바로 다음 = 값 셀 시작
+        const from = valueCellStart + 1; // 값 셀 내부(여는 토큰 다음)
+        const to = valueCellStart + valueCellNode.nodeSize - 1; // 값 셀 내부 끝(닫는 토큰 앞)
+        const paragraph = state.schema.nodes.paragraph.create(null, state.schema.text(label));
+        tr.replaceWith(from, to, paragraph);
+        return true;
+      })
+      .run();
+  }
+
+  if (!state.active) return null;
+
+  return (
+    <span className="flex items-center overflow-hidden rounded border border-navy-100" onMouseDown={(e) => e.preventDefault()}>
+      <button
+        type="button"
+        onClick={() => setStatus(AGENDA_DONE_LABEL.DONE)}
+        className={`px-2 py-1 text-xs font-medium ${
+          state.current === AGENDA_DONE_LABEL.DONE ? "bg-navy-900 text-white" : "text-navy-950/70 hover:bg-navy-50"
+        }`}
+      >
+        완료
+      </button>
+      <button
+        type="button"
+        onClick={() => setStatus(AGENDA_DONE_LABEL.PENDING)}
+        className={`px-2 py-1 text-xs font-medium ${
+          state.current !== AGENDA_DONE_LABEL.DONE ? "bg-navy-900 text-white" : "text-navy-950/70 hover:bg-navy-50"
+        }`}
+      >
+        미결
+      </button>
+    </span>
+  );
+}
 
 const LINE_HEIGHT_OPTIONS = [
   { label: "좁게", value: "1.0" },
@@ -599,6 +720,7 @@ function Toolbar({ editor }: { editor: Editor }) {
       />
       <Divider />
       <LineHeightSelect editor={editor} />
+      <AgendaDoneToggle editor={editor} />
       <Divider />
       <FontSizeSelect editor={editor} />
       <ColorPicker editor={editor} />
@@ -670,6 +792,7 @@ export function TemplateRichTextEditor({
       LineHeight,
       FieldKeyAttribute,
       TableRoleAttribute,
+      PendingAgendaIdAttribute,
     ],
     [],
   );

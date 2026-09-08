@@ -259,6 +259,20 @@ export function CalendarView({
         .rbc-event-content { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .rbc-event { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .rbc-row-segment { overflow: hidden; }
+        /* Hotfix(Month View "+N 더보기" clipping) 안전망 — 위 두 CSS(boxShadow
+           전환, margin 제거)로 react-big-calendar의 row-limit 측정 오차를
+           많이 줄였지만, 한 주에 겹치는 일정 종류(level)가 3개 이상이면
+           여전히 실제 렌더 높이가 계산값을 약간 넘을 수 있다(라이브러리
+           내부 측정 로직 자체의 한계 — DateContentRow.getRowLimit이 보이지
+           않는 더미 Bar 1개로만 "한 줄 높이"를 재고, 그 값을 모든 level에
+           동일하게 곱해 예산을 세운다). 남는 오차가 있을 때 "+N 더보기"
+           문구 자체가 잘리면 안 되므로(요청사항: "+N 더보기는 cell 내부에
+           항상 완전히 표시"), 그 문구를 담은 row만 이 cell의 맨 아래에
+           고정한다 — 넘치는 일정 Bar가 있다면 그 Bar 쪽이(이미 "+N"
+           숫자에 포함되어 있으므로) 대신 가려지고, 더보기 문구는 항상
+           끝까지 보인다. */
+        .rbc-row-content { position: relative; }
+        .rbc-row:has(> .rbc-row-segment > .rbc-show-more) { position: absolute; left: 0; right: 0; bottom: 0; }
         /* Task Bar를 compact/저채도로(요청사항 9) — 높이/여백을 줄이고 radius를
            작게 준다. Month은 RBC가 여러 주(row)에 걸친 이벤트를 각 주마다 별도
            segment로 나눠 그리므로, 연속된 하나의 막대처럼 보이려면(요청사항 10)
@@ -269,10 +283,23 @@ export function CalendarView({
            준다).
            Sat→Sun 중복 표시 버그 재발 방지용 dueDate 23:59:59.999 boundary
            fix(calendarMapper.ts)는 이 CSS와 무관하게 그대로 유지된다. */
-        .rbc-event { border-radius: 4px; padding: 2px 6px; min-height: 24px; }
+        /* Hotfix(Month View "+N 더보기" clipping) — min-height를 24→28로
+           올린다. 실제 렌더링되는 Bar는 padding+한 줄 텍스트만으로 이미
+           28px을 넘겨서(border를 없앤 뒤로도) min-height 24px는 애초에
+           실질적 제약이 아니었다 — 그래서 이 변경은 실제 Bar 높이/가독성을
+           전혀 바꾸지 않는다(실측 확인). 대신 react-big-calendar가 "한 줄이
+           몇 px인지" 재는 보이지 않는 측정용 더미(getRowLimit, 위 참고)는
+           내용이 없어(&nbsp;뿐) 24px 바닥값에 그대로 눌려 있었는데, 그
+           바닥값을 실제 Bar 높이에 맞게 올리면 더미도 같은 값으로 측정돼
+           "몇 개가 들어가는지" 계산이 훨씬 정확해진다. */
+        .rbc-event { border-radius: 4px; padding: 2px 6px; min-height: 28px; }
         .rbc-event.rbc-event-continues-prior { border-top-left-radius: 0; border-bottom-left-radius: 0; }
         .rbc-event.rbc-event-continues-after { border-top-right-radius: 0; border-bottom-right-radius: 0; }
-        .rbc-row-segment .rbc-event { margin: 1px 0; }
+        /* Hotfix(Month View "+N 더보기" clipping) — Bar 하나당 세로 margin
+           2px(위+아래 1px)까지 실측으로 확인된 누적 오차의 일부였다(Bar 수가
+           많은 주일수록 그만큼 여러 번 쌓인다) — 제거해 여유를 조금 더
+           확보한다. */
+        .rbc-row-segment .rbc-event { margin: 0; }
         /* dragAndDrop addon의 좌/우 Resize 손잡이는 기본적으로 너비가 없어(아이콘
            선 두께만큼만) 실제로 집기 매우 어렵다 — CustomWeekView의 Resize 손잡이와
            동일한 체감(10px hit 영역)이 되도록 넓히되, 아이콘 자체는 justify-content로
@@ -374,24 +401,32 @@ export function CalendarView({
                 style: {
                   backgroundColor: tint.bg,
                   color: tint.text,
-                  // 업무구분 색은 왼쪽 얇은 accent 띠로만 표시하고(요청사항 9:
-                  // 담당자색이 아니라 Category색, 상태는 이를 덮어쓰지 않고
-                  // 보조 표현), Overdue의 얇은 red border(요청사항)와 서로
-                  // 다른 CSS 속성(boxShadow vs border)을 써서 절대 충돌하지
-                  // 않게 한다.
-                  boxShadow: `inset 3px 0 0 0 ${tint.border}`,
-                  // Step(Month View overdue border 가시성 보완) — Week View
-                  // (CustomWeekView.tsx EventBar)에 이미 적용된 기준(3px solid
-                  // #dc2626 / 비지연 3px solid transparent)을 Month View에도
-                  // 동일하게 맞춘다. eventPropGetter가 반환하는 이 style은
-                  // react-big-calendar가 .rbc-event에 인라인으로 그대로
-                  // 적용하므로(react-big-calendar.css의 `.rbc-event { border:
-                  // none }`는 class 기반 규칙이라 인라인 style보다 우선순위가
-                  // 낮다 — 확인 완료, 별도 override 불필요) 이 값이 곧
-                  // 최종 computed border다. 비지연 Bar도 동일 폭(3px
-                  // transparent)으로 맞춰 상태에 따라 Bar 크기가 흔들리지
-                  // 않게 한다.
-                  border: overdue ? "3px solid #dc2626" : "3px solid transparent",
+                  // 업무구분 색은 왼쪽 얇은 accent 띠로, Overdue는 전체 테두리로
+                  // 표시한다(요청사항 9) — 둘 다 실제 `border`가 아니라 inset
+                  // boxShadow 두 겹으로 그린다(먼저 쓴 것이 나중 것 위에 그려지므로
+                  // accent 띠가 왼쪽에서 border 위에 보인다).
+                  //
+                  // Hotfix(Month View `+N 더보기` clipping, V1.1 사용성 개선) —
+                  // 실제 원인: react-big-calendar가 "이 week row에 event가 몇 개
+                  // 들어가는지"를 계산할 때, 화면에 실제로 그려지는 Bar가 아니라
+                  // eventPropGetter를 거치지 않는 별도의 "보이지 않는 측정용
+                  // 더미 .rbc-event"의 높이를 잰다(react-big-calendar 소스
+                  // DateContentRow.getRowLimit 확인). 그 더미는 border가 전혀
+                  // 없는데, 이 Bar는 `border: 3px solid`(투명이어도 레이아웃
+                  // 높이에는 그대로 반영됨)를 인라인으로 얹고 있어 실제 렌더링
+                  // 높이가 더미보다 한 Bar당 6px(위+아래 3px씩) 더 컸다 — 그
+                  // 오차가 한 주에 쌓인 Bar 수만큼 누적되어, 실제 필요한 높이가
+                  // react-big-calendar의 계산보다 커지고, 그 초과분이(.rbc-row-
+                  // content가 overflow:visible이라) 다음 주 row 위로 흘러넘쳐
+                  // "+N 더보기"가 다음 주 경계에 걸리거나 잘려 보였다(실측
+                  // 확인: Bar 실제 높이 33.33px, border를 없애면 6px 줄어든다).
+                  // border는 boxShadow와 달리 레이아웃 높이에 반영되는 속성이라
+                  // 발생한 문제 — boxShadow(레이아웃에 전혀 영향 없음)로 바꾸면
+                  // 시각적으로는 완전히 동일한 테두리를 유지하면서 이 오차 자체가
+                  // 사라진다(라이브러리 내부를 patch하지 않고 원인을 없애는
+                  // 방식). 비지연 Bar도 두 번째 shadow를 transparent로 둬
+                  // 오버플로우 크기가 상태에 따라 흔들리지 않게 유지한다.
+                  boxShadow: `inset 3px 0 0 0 ${tint.border}, inset 0 0 0 3px ${overdue ? "#dc2626" : "transparent"}`,
                   opacity: done ? 0.55 : onHold ? 0.7 : 1,
                   textDecoration: done ? "line-through" : undefined,
                   fontWeight: 500,

@@ -10,7 +10,9 @@ import { buildWeeklySections, type WeeklyTaskInfo } from "./build";
 import { MEETING_FIELD_KEY } from "./fieldSemantics";
 import { mergeSectionsIntoDocument } from "./injectDocument";
 import { injectMeetingInfoFields } from "./injectMeetingInfo";
+import { insertPendingAgendaBlocks } from "./pendingAgenda";
 import { getWeeklyMeetingRange, type WeekRange } from "./weekRange";
+import type { MeetingTemplateType } from "@/app/generated/prisma/enums";
 import type { JSONContent } from "@tiptap/core";
 
 /**
@@ -300,4 +302,51 @@ export async function loadWeeklyScheduleIntoDraftAction(
       missingFields,
     },
   };
+}
+
+export interface PendingAgendaLoadResult {
+  /** Client(Tiptap Editor)에 그대로 넘기는 문서 — loadWeeklyScheduleIntoDraftAction과
+   * 같은 이유(Next.js Server Action 직렬화 문제 우회)로 JSON 문자열로
+   * 내려준다. */
+  documentJson: string;
+  /** 이번 호출로 실제로 새로 삽입된 안건 수 — 0이면 이월할 미결 안건이
+   * 없었거나(전부 이미 문서에 반영돼 있음) 애초에 대상이 없었다는 뜻이다. */
+  loadedCount: number;
+}
+
+/**
+ * "미결 안건 불러오기" — meetingType의 미소비(consumedAt IS NULL) pending
+ * 안건을 현재 문서의 "주요 안건" 섹션 끝에 추가한다(lib/meetingMinutes/
+ * pendingAgenda.ts insertPendingAgendaBlocks). `일정 불러오기`와 완전히
+ * 같은 패턴 — 여기서는 병합 계산만 하고 실제 Draft Row 저장은 Client의
+ * 자동저장(또는 즉시 저장 호출)이 담당한다.
+ *
+ * 중복 방지는 문서에 이미 있는 pendingAgendaId로 판단하므로(재클릭 안전),
+ * 여기서 "새로 삽입한" 것만 consumedAt을 채운다 — 이미 문서에 있어 이번에
+ * 건너뛴 Row는 그대로 둔다(다음에도 계속 스킵되므로 안전, 상태를 앞당겨
+ * 바꿀 필요가 없다).
+ */
+export async function loadPendingAgendaIntoDraftAction(
+  meetingType: MeetingTemplateType,
+  currentDocument: unknown,
+): Promise<{ result?: PendingAgendaLoadResult; error?: string }> {
+  await requireUser();
+
+  const validatedDoc = validateDocumentContent(parseDocumentContentInput(currentDocument));
+  if (!validatedDoc) return { error: "현재 회의록 문서 내용이 올바르지 않습니다." };
+
+  const pendingRows = await prisma.meetingMinutesPendingAgenda.findMany({
+    where: { meetingType, consumedAt: null },
+    orderBy: { createdAt: "asc" },
+  });
+
+  const { document, insertedIds } = insertPendingAgendaBlocks(validatedDoc, pendingRows);
+  if (insertedIds.length > 0) {
+    await prisma.meetingMinutesPendingAgenda.updateMany({
+      where: { id: { in: insertedIds } },
+      data: { consumedAt: new Date() },
+    });
+  }
+
+  return { result: { documentJson: JSON.stringify(document), loadedCount: insertedIds.length } };
 }

@@ -6,7 +6,7 @@ import { TemplateRichTextEditor } from "../meeting-templates/TemplateRichTextEdi
 import { MEETING_TEMPLATE_TYPE_LABELS } from "@/lib/meetingTemplates/constants";
 import { normalizeHeadingText } from "@/lib/meetingMinutes/sectionHeadings";
 import { resetMeetingMinutesDraftAction, saveMeetingMinutesDraftAction, type MeetingMinutesDraft } from "@/lib/meetingMinutes/draft";
-import { loadWeeklyScheduleIntoDraftAction, type WeeklyScheduleLoadResult } from "@/lib/meetingMinutes/actions";
+import { loadPendingAgendaIntoDraftAction, loadWeeklyScheduleIntoDraftAction, type WeeklyScheduleLoadResult } from "@/lib/meetingMinutes/actions";
 
 /** 자동저장 debounce 간격 — 편집 중 매 키 입력마다 저장 요청을 보내지 않게
  * (요청사항: "과도한 요청을 피하도록 debounce 적용") 마지막 변경 후 이
@@ -98,6 +98,7 @@ export function MeetingMinutesPreviewClient({
   const [documentContent, setDocumentContent] = useState<JSONContent | null>(draft?.document ?? null);
   const [weeklyInfo, setWeeklyInfo] = useState<WeeklyScheduleLoadResult | null>(null);
   const [loadingSchedule, setLoadingSchedule] = useState(false);
+  const [loadingPendingAgenda, setLoadingPendingAgenda] = useState(false);
   const [loadFeedback, setLoadFeedback] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [downloadingDocx, setDownloadingDocx] = useState(false);
@@ -300,6 +301,54 @@ export function MeetingMinutesPreviewClient({
     }
   }
 
+  /** Step(Schedule/Meeting Minutes V1.1 사용성 개선 — 미결 안건 이월) —
+   * `일정 불러오기`와 완전히 같은 패턴(현재 문서를 넘겨 서버가 그 위에
+   * 병합한 결과를 받고, 이 클릭 자체가 명시적 Trigger이므로 즉시 저장까지
+   * 한다). 대상은 초기화 직전에 자동으로 캡처돼 있던 미결 안건(consumedAt
+   * 이 아직 없는 것)뿐이고, 중복 삽입 방지는 서버(pendingAgendaId 문서
+   * 내 존재 여부)가 담당한다 — 여기서는 결과 문서를 반영하고 안내
+   * 문구만 표시한다. */
+  async function handleLoadPendingAgenda() {
+    if (!documentContent || !draft) return;
+    if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+    setLoadingPendingAgenda(true);
+    setLoadError(null);
+    setLoadFeedback(null);
+    try {
+      const res = await loadPendingAgendaIntoDraftAction(draft.meetingType, JSON.stringify(documentContent));
+      if (res.error || !res.result) {
+        setLoadError(res.error ?? "미결 안건을 불러오지 못했습니다.");
+        return;
+      }
+      const merged = JSON.parse(res.result.documentJson) as JSONContent;
+      setDocumentContent(merged);
+      setReloadNonce((n) => n + 1);
+      setLoadFeedback(res.result.loadedCount > 0 ? `미결 안건 ${res.result.loadedCount}건을 불러왔습니다.` : "이월할 미결 안건이 없습니다.");
+
+      if (res.result.loadedCount > 0) {
+        setSaveStatus("saving");
+        try {
+          const saveRes = await saveMeetingMinutesDraftAction(draft.meetingType, JSON.stringify(merged), versionRef.current);
+          if (saveRes.conflict) {
+            if (typeof saveRes.version === "number") versionRef.current = saveRes.version;
+            setSaveStatus("conflict");
+          } else if (saveRes.error) {
+            setSaveStatus("error");
+          } else {
+            if (typeof saveRes.version === "number") versionRef.current = saveRes.version;
+            setSaveStatus("saved");
+          }
+        } catch {
+          setSaveStatus("error");
+        }
+      }
+    } catch {
+      setLoadError("미결 안건을 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.");
+    } finally {
+      setLoadingPendingAgenda(false);
+    }
+  }
+
   /** Step(파트 주간회의 Table UX + AUTO 필드 개편) — "현재 사용자가 보고/
    * 편집 중인 Draft"를 그대로 내려받는다(요청사항: Template 원본이 아니다).
    * 다운로드는 DB 저장을 의미하지 않는다 — Route Handler(app/api/meeting-minutes/
@@ -466,6 +515,18 @@ export function MeetingMinutesPreviewClient({
         </span>
 
         <OverflowMenu>
+          {/* Step(Schedule/Meeting Minutes V1.1 사용성 개선 — 미결 안건
+              이월) — 지난 회차 초기화 직전에 자동 캡처된 미결 안건을
+              가져온다. 파괴적이지 않은 동작이라 confirm 없이 즉시
+              실행한다(초기화와의 정책 차이). */}
+          <button
+            type="button"
+            onClick={handleLoadPendingAgenda}
+            disabled={loadingPendingAgenda || !documentContent}
+            className="w-full whitespace-nowrap rounded px-3 py-1.5 text-left text-xs font-medium text-navy-950/80 hover:bg-navy-50 disabled:opacity-50"
+          >
+            {loadingPendingAgenda ? "미결 안건 불러오는 중..." : "미결 안건 불러오기"}
+          </button>
           {/* 초기화 — confirmation 1회 후에만 실행한다(요청사항). 새로고침/
               `일정 불러오기`와 완전히 분리된 별도 버튼 Trigger다. */}
           <button

@@ -385,6 +385,38 @@ model MeetingMinutesDraft {
   updater User @relation(fields: [updatedBy], references: [id])
 }
 
+/// Step(Schedule/Meeting Minutes V1.1 사용성 개선 — 미결 안건 이월) — "초기화"
+/// (resetMeetingMinutesDraftAction)는 meetingType당 Draft 1개를 활성
+/// Template으로 완전히 덮어쓴다 — 그 순간 사라지는 안건 중 "미결" 상태인
+/// 것만 이 표에 캡처해 별도로 보존한다(완료 안건은 캡처하지 않는다 —
+/// 다음 회의로 이월할 필요가 없으므로). 자동 이월이 아니라 "미결 안건
+/// 불러오기"(사용자가 명시적으로 누르는 버튼, `일정 불러오기`와 같은
+/// 패턴)로만 다음 Draft에 반영된다 — 데이터 손실/중복 가능성이 가장
+/// 낮은 방식으로 선택함(완료 보고 참고).
+///
+/// 중복 방지: "미결 안건 불러오기"가 이 표의 한 Row를 문서에 넣을 때
+/// 그 안건 블록에 attrs.pendingAgendaId = 이 Row의 id를 심어 둔다.
+/// 같은 문서 안에 이미 그 id가 있으면 다시 넣지 않는다(재클릭 안전).
+/// 성공적으로 병합해 반환한 직후 consumedAt을 채운다 — 이후 다시
+/// 조회되지 않아 다른 회의록에 잘못 실리지 않는다.
+model MeetingMinutesPendingAgenda {
+  id          String              @id @default(cuid())
+  meetingType MeetingTemplateType
+  title       String
+  content     String
+  decision    String
+  owner       String
+  /// 캡처 시점 문서의 "회의 일시" 필드 값(있으면) — 안건이 어느 회의에서
+  /// 이월됐는지 사용자에게 보여주는 용도일 뿐, 병합 로직은 이 값을 읽지
+  /// 않는다.
+  sourceLabel String?
+  /// null이면 아직 어느 Draft에도 실리지 않은 상태(= "불러오기" 대상).
+  consumedAt  DateTime?
+  createdAt   DateTime            @default(now())
+
+  @@index([meetingType, consumedAt])
+}
+
 // ---------------- 일정관리(Schedule) ----------------
 // Task가 최상위 개념이며 일정 DB가 Single Source of Truth다. 지연 여부는 컬럼으로
 // 저장하지 않고 (dueDate < now && status != DONE)로 매 조회 시 계산한다.

@@ -5,6 +5,8 @@ import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { invalidateCache } from "@/lib/cache/memoCache";
 import { combineDateWithKstTimeOfDay, kstWallClockToInstant } from "@/lib/kst";
+import { renameProjectHeadingInDocument } from "@/lib/meetingMinutes/projectRename";
+import type { JSONContent } from "@tiptap/core";
 import {
   DEFAULT_PROJECT_CATEGORY_GROUP_ID,
   PROJECT_CATEGORIES_CACHE_KEY,
@@ -1427,4 +1429,96 @@ export async function deleteTaskStatusOptionAction(id: string): Promise<{ ok?: t
   invalidateCache(TASK_STATUS_OPTIONS_CACHE_KEY);
   revalidatePath("/schedule");
   return { ok: true };
+}
+
+/**
+ * Step(Schedule/Meeting Minutes V1.1 사용성 개선 — 프로젝트명 일괄 변경) —
+ * 오타로 존재하지 않는 프로젝트명을 직접 입력하게 만들지 않기 위해, 실제
+ * Task에서 쓰이는 distinct projectName만 드롭다운 후보로 내려준다.
+ */
+export async function getDistinctProjectNamesAction(): Promise<{ names?: string[]; error?: string }> {
+  const session = await requireUser();
+  const permissionError = requireAdminRole(session);
+  if (permissionError) return { error: permissionError };
+
+  const rows = await prisma.taskProjectDetail.findMany({
+    distinct: ["projectName"],
+    select: { projectName: true },
+    orderBy: { projectName: "asc" },
+  });
+  return { names: rows.map((r) => r.projectName) };
+}
+
+/** 변경 전 "영향받는 일정: N건" preview용 — 정확 일치 기준으로 센다. */
+export async function countProjectNameUsageAction(projectName: string): Promise<{ count?: number; error?: string }> {
+  const session = await requireUser();
+  const permissionError = requireAdminRole(session);
+  if (permissionError) return { error: permissionError };
+
+  const count = await prisma.taskProjectDetail.count({ where: { projectName } });
+  return { count };
+}
+
+/**
+ * 프로젝트명 일괄 변경 — 대상은 오직 Task.projectName(TaskProjectDetail.
+ * projectName), 정확히 일치하는 행만 바꾼다(요청사항: 부분 일치 금지,
+ * 업무명/메모/댓글/회의록 USER 내용 등 다른 텍스트는 전혀 건드리지 않는다).
+ * Ctrl+H 방식의 전체 문자열 치환이 아니다.
+ *
+ * Meeting Minutes merge identity 대응(요청사항: "USER/AI 내용을 잃지 않는
+ * 것이 최우선") — build.ts가 프로젝트 그룹 병합 key로 projectName(H3
+ * heading 텍스트)을 그대로 쓰기 때문에, Task만 바꾸고 끝내면 다음 "일정
+ * 불러오기" 때 기존 이름 블록(orphan으로 보존)과 새 이름 블록(새로 생성,
+ * 내용 빈 채로)이 중복 생성된다. 그래서 같은 트랜잭션 안에서 모든
+ * MeetingMinutesDraft의 H3 heading 중 텍스트가 정확히 oldName인 것만
+ * newName으로 함께 바꾼다(renameProjectHeadingInDocument) — heading
+ * 텍스트만 바꾸고 그 아래 AUTO/USER 내용은 절대 건드리지 않는다.
+ */
+export async function bulkRenameProjectAction(
+  oldName: string,
+  newName: string,
+): Promise<{ updatedTaskCount?: number; updatedDraftCount?: number; error?: string }> {
+  const session = await requireUser();
+  const permissionError = requireAdminRole(session);
+  if (permissionError) return { error: permissionError };
+
+  const trimmedOld = oldName.trim();
+  const trimmedNew = newName.trim();
+  if (!trimmedOld) return { error: "기존 프로젝트명을 선택해 주세요." };
+  if (!trimmedNew) return { error: "변경할 프로젝트명을 입력해 주세요." };
+  if (trimmedOld === trimmedNew) return { error: "기존 이름과 같습니다." };
+
+  const targetCount = await prisma.taskProjectDetail.count({ where: { projectName: trimmedOld } });
+  if (targetCount === 0) return { error: "해당 프로젝트명을 사용 중인 일정이 없습니다." };
+
+  try {
+    const result = await prisma.$transaction(async (tx) => {
+      const updated = await tx.taskProjectDetail.updateMany({
+        where: { projectName: trimmedOld },
+        data: { projectName: trimmedNew },
+      });
+      if (updated.count !== targetCount) {
+        throw new Error("변경 도중 대상 일정 수가 달라졌습니다. 다시 시도해 주세요.");
+      }
+
+      const drafts = await tx.meetingMinutesDraft.findMany({ select: { id: true, documentContent: true } });
+      let updatedDraftCount = 0;
+      for (const draft of drafts) {
+        const parsed = JSON.parse(draft.documentContent) as JSONContent;
+        const { document, changed } = renameProjectHeadingInDocument(parsed, trimmedOld, trimmedNew);
+        if (changed) {
+          await tx.meetingMinutesDraft.update({ where: { id: draft.id }, data: { documentContent: JSON.stringify(document) } });
+          updatedDraftCount++;
+        }
+      }
+
+      return { updatedTaskCount: updated.count, updatedDraftCount };
+    });
+
+    revalidatePath("/schedule");
+    revalidatePath("/meeting-minutes-preview");
+    return result;
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : "프로젝트명을 변경하지 못했습니다." };
+  }
 }

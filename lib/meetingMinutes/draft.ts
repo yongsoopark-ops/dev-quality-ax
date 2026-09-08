@@ -2,6 +2,8 @@
 
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
+import { normalizeAgendaDoneCells } from "@/lib/meetingMinutes/agendaStatus";
+import { extractMeetingDateTimeLabel, extractPendingAgendaItems } from "@/lib/meetingMinutes/pendingAgenda";
 import { getActiveMeetingTemplateAction } from "@/lib/meetingTemplates/actions";
 import { MEETING_TEMPLATE_TYPE_LABELS } from "@/lib/meetingTemplates/constants";
 import { parseDocumentContentInput, validateDocumentContent } from "@/lib/meetingTemplates/richText";
@@ -122,7 +124,12 @@ async function cloneFromActiveTemplate(
     };
   }
 
-  const document: JSONContent = JSON.parse(JSON.stringify(templateRes.template.documentContent));
+  const cloned: JSONContent = JSON.parse(JSON.stringify(templateRes.template.documentContent));
+  // Hotfix(주요 안건 완료/미결) — Template 자체가 아직 예전 "☐" 골격을
+  // 쓰고 있어도, 이걸 clone해 새 Draft로 만드는 시점(최초 진입/초기화)에
+  // 항상 "완료"/"미결" 표기로 정규화해 둔다. Template DB 원본은 여기서도
+  // 절대 수정하지 않는다(clone된 값만 정규화).
+  const { document } = normalizeAgendaDoneCells(cloned);
   return {
     document,
     templateId: templateRes.template.id,
@@ -155,11 +162,25 @@ export async function getMeetingMinutesDraftAction(meetingType: MeetingTemplateT
     // 않는다(요청사항: "Template 변경 시 기존 Draft 자동 덮어쓰기 금지").
     const { version: activeVersion, error } = await getActiveTemplateVersion(meetingType);
     if (error) return { error };
+    // Hotfix(주요 안건 완료/미결) — 기존 checkbox 시절("☐"/"☑") Draft가
+    // 그대로 남아 있어도 다음 조회부터 자연스럽게 "완료"/"미결" 표기로
+    // 보이게 한다(요청사항: "기존 checkbox 기반 Draft 호환") — DB를 별도로
+    // 일괄 migration하지 않는다. 정규화된 결과가 원본과 다를 때만 그
+    // 자리에서 Draft Row도 함께 갱신해, 다음 조회부터는 이 변환을 매번
+    // 반복하지 않는다(sourceTemplate/version은 건드리지 않는 가벼운 보정).
+    const parsedDocument = JSON.parse(existing.documentContent) as JSONContent;
+    const { document: normalizedDocument, changed } = normalizeAgendaDoneCells(parsedDocument);
+    if (changed) {
+      await prisma.meetingMinutesDraft.update({
+        where: { meetingType },
+        data: { documentContent: JSON.stringify(normalizedDocument) },
+      });
+    }
     return {
       draft: {
         meetingType,
         templateName: activeVersion?.name ?? null,
-        document: JSON.parse(existing.documentContent) as JSONContent,
+        document: normalizedDocument,
         templateMissing: false,
         templateOutdated: isTemplateOutdated(existing, activeVersion ?? null),
         version: existing.version,
@@ -284,6 +305,24 @@ export async function saveMeetingMinutesDraftAction(
 export async function resetMeetingMinutesDraftAction(meetingType: MeetingTemplateType): Promise<{ draft?: MeetingMinutesDraft; error?: string }> {
   const session = await requireUser();
   if (!SUPPORTED_TYPES.includes(meetingType)) return { error: "아직 지원하지 않는 회의 유형입니다." };
+
+  // Step(미결 안건 이월) — 지금 지워질 Draft 안의 "미결" 안건만 별도 표
+  // (MeetingMinutesPendingAgenda)에 스냅샷으로 남긴다(완료 안건은 캡처하지
+  // 않는다 — 다음 회의로 이월할 필요가 없으므로). 이 표는 Draft와 완전히
+  // 독립적이라 바로 다음 upsert가 Draft를 덮어써도 사라지지 않는다. 정책상
+  // "같은 이슈가 여러 회차 연속 미결이어도 매번 새 Row를 만든다"(기존 Row
+  // 갱신 금지) — 그래서 무조건 create만 하고, update/upsert는 하지 않는다.
+  const existingBeforeReset = await prisma.meetingMinutesDraft.findUnique({ where: { meetingType } });
+  if (existingBeforeReset) {
+    const existingDoc = JSON.parse(existingBeforeReset.documentContent) as JSONContent;
+    const pendingItems = extractPendingAgendaItems(existingDoc);
+    if (pendingItems.length > 0) {
+      const sourceLabel = extractMeetingDateTimeLabel(existingDoc);
+      await prisma.meetingMinutesPendingAgenda.createMany({
+        data: pendingItems.map((item) => ({ meetingType, sourceLabel, ...item })),
+      });
+    }
+  }
 
   const cloned = await cloneFromActiveTemplate(meetingType);
   if (cloned.error) return { error: cloned.error };

@@ -1,10 +1,12 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { DndContext, PointerSensor, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
 import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import {
+  bulkRenameProjectAction,
+  countProjectNameUsageAction,
   createProjectCategoryAction,
   createProjectCategoryGroupAction,
   createTaskCategoryOptionAction,
@@ -12,6 +14,7 @@ import {
   deleteProjectCategoryGroupAction,
   deleteTaskCategoryOptionAction,
   deleteTaskStatusOptionAction,
+  getDistinctProjectNamesAction,
   moveProjectCategoryToGroupAction,
   removeProjectCategoryAction,
   reorderProjectCategoriesAction,
@@ -952,6 +955,168 @@ function ProjectCategoryHierarchySection({
   );
 }
 
+/**
+ * Step(Schedule/Meeting Minutes V1.1 사용성 개선 — 프로젝트명 일괄 변경) —
+ * 개발 초기 임시 프로젝트명이 정식 제품명으로 확정됐을 때 Task를 하나씩
+ * 고치지 않아도 되게 한다(요청사항). 대상은 정확히 일치하는 projectName
+ * 뿐이다(부분 일치 금지) — 오타로 존재하지 않는 이름을 입력하지 않도록
+ * 실제 쓰이는 distinct 목록만 드롭다운으로 보여준다. 변경 자체와 Meeting
+ * Minutes Draft 쪽 안전 조치(H3 heading만 같이 맞춤)는 모두
+ * bulkRenameProjectAction(actions.ts) 서버 트랜잭션 안에서 일어난다 —
+ * 여기서는 preview count 확인과 confirm dialog만 담당한다.
+ */
+function ProjectRenameSection() {
+  const [names, setNames] = useState<string[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [oldName, setOldName] = useState("");
+  const [newName, setNewName] = useState("");
+  const [previewCount, setPreviewCount] = useState<number | null>(null);
+  const [checkingCount, setCheckingCount] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const res = await getDistinctProjectNamesAction();
+      if (cancelled) return;
+      if (res.names) setNames(res.names);
+      setLoading(false);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // 기존 프로젝트명을 고를 때마다 "영향받는 일정 N건"을 다시 확인한다 —
+  // 변경 버튼을 누르기 전에 사용자가 실제 영향 범위를 미리 볼 수 있게
+  // 한다(요청사항: "변경 전 Preview").
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      if (!oldName) {
+        if (!cancelled) setPreviewCount(null);
+        return;
+      }
+      setCheckingCount(true);
+      const res = await countProjectNameUsageAction(oldName);
+      if (cancelled) return;
+      setPreviewCount(res.count ?? 0);
+      setCheckingCount(false);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [oldName]);
+
+  async function handleSubmit() {
+    setError(null);
+    setResult(null);
+    const trimmedNew = newName.trim();
+    if (!oldName) {
+      setError("기존 프로젝트명을 선택해 주세요.");
+      return;
+    }
+    if (!trimmedNew) {
+      setError("변경할 프로젝트명을 입력해 주세요.");
+      return;
+    }
+    if (trimmedNew === oldName) {
+      setError("기존 이름과 같습니다.");
+      return;
+    }
+    if (!previewCount) {
+      setError("영향받는 일정이 없습니다.");
+      return;
+    }
+    // 0건이면 실행 금지 / 이름이 같으면 실행 금지(요청사항) — 위에서 이미
+    // 막혔으므로 이 시점의 confirm은 항상 "N건 이상"에 대해서만 뜬다.
+    const confirmed = window.confirm(`"${oldName}" 프로젝트명을 "${trimmedNew}"(으)로 변경할까요?\n${previewCount}개의 일정에 적용됩니다.`);
+    if (!confirmed) return;
+
+    setSubmitting(true);
+    const res = await bulkRenameProjectAction(oldName, trimmedNew);
+    setSubmitting(false);
+    if (res.error) {
+      setError(res.error);
+      return;
+    }
+    setResult(
+      `${res.updatedTaskCount}개 일정의 프로젝트명을 변경했습니다.${
+        res.updatedDraftCount ? ` (회의록 ${res.updatedDraftCount}건의 표기도 함께 갱신됨)` : ""
+      }`,
+    );
+    setNames((prev) => [...prev.filter((n) => n !== oldName), trimmedNew].sort((a, b) => a.localeCompare(b)));
+    setOldName(trimmedNew);
+    setNewName("");
+    setPreviewCount(null);
+  }
+
+  return (
+    <div className="space-y-3 border-t border-navy-100 pt-5">
+      <div>
+        <h3 className="text-sm font-semibold text-navy-950">프로젝트명 일괄 변경</h3>
+        <p className="mt-0.5 text-xs text-navy-950/50">
+          정확히 일치하는 프로젝트명을 가진 일정만 한 번에 바꿉니다. 업무명·메모·댓글·회의록 작성 내용은 바뀌지 않습니다.
+        </p>
+      </div>
+
+      <div className="space-y-2">
+        <div>
+          <label className="mb-1 block text-xs text-navy-950/60">기존 프로젝트명</label>
+          <select
+            value={oldName}
+            onChange={(e) => {
+              setOldName(e.target.value);
+              setResult(null);
+              setError(null);
+            }}
+            disabled={loading || submitting}
+            className="w-full rounded-md border border-navy-100 px-3 py-1.5 text-sm disabled:opacity-50"
+          >
+            <option value="">{loading ? "불러오는 중..." : "선택하세요"}</option>
+            {names.map((n) => (
+              <option key={n} value={n}>
+                {n}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label className="mb-1 block text-xs text-navy-950/60">변경할 프로젝트명</label>
+          <input
+            type="text"
+            value={newName}
+            onChange={(e) => {
+              setNewName(e.target.value);
+              setResult(null);
+              setError(null);
+            }}
+            disabled={submitting}
+            placeholder="예: M-쿨러터보 핏"
+            className="w-full rounded-md border border-navy-100 px-3 py-1.5 text-sm disabled:opacity-50"
+          />
+        </div>
+      </div>
+
+      {oldName && <p className="text-xs text-navy-950/60">{checkingCount ? "영향받는 일정 확인 중..." : `영향받는 일정: ${previewCount ?? 0}건`}</p>}
+
+      {error && <p className="text-xs text-red-600">{error}</p>}
+      {result && <p className="text-xs text-emerald-700">{result}</p>}
+
+      <button
+        type="button"
+        onClick={handleSubmit}
+        disabled={submitting || !oldName || !newName.trim() || !previewCount}
+        className="rounded-md bg-navy-900 px-3.5 py-1.5 text-xs font-medium text-white hover:bg-navy-800 disabled:opacity-50"
+      >
+        {submitting ? "변경하는 중..." : "일괄 변경"}
+      </button>
+    </div>
+  );
+}
+
 export function ScheduleSettingsModal({
   categoryOptions,
   statusOptions,
@@ -1091,6 +1256,8 @@ export function ScheduleSettingsModal({
             onGroupsChange={onProjectCategoryGroupsChange}
             onCategoriesChange={onProjectCategoriesChange}
           />
+
+          <ProjectRenameSection />
         </div>
       </div>
     </div>

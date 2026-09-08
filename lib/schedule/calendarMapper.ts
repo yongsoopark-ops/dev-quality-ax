@@ -1,4 +1,5 @@
 import { differenceInCalendarDays } from "date-fns";
+import { formatKstTime } from "@/lib/kst";
 import { TASK_CATEGORY_KEY as TaskCategory } from "@/lib/schedule/constants";
 import { computeRecurringOccurrenceDates } from "@/lib/schedule/recurrence";
 import type { TaskWithRelations } from "@/lib/schedule/types";
@@ -21,9 +22,44 @@ export interface CalendarTaskEvent {
 }
 
 /**
+ * Step(Final V1.1 Fix — 누락된 미팅 Calendar Label) — MEETING도 PROJECT/
+ * PERSONAL_GOAL과 같은 "핵심 정보 | 부가 정보" 구조로 통일한다: "미팅명 |
+ * HH:mm-HH:mm 미팅"(요청사항 예시: "선제적 품질 강화 | 10:00-11:20 미팅").
+ * 시:분은 항상 Asia/Seoul 기준으로 뽑는다(lib/kst.ts formatKstTime — 서버
+ * 런타임 timezone과 무관, Hotfix Step에서 이미 검증된 helper를 그대로
+ * 재사용) — Calendar는 클라이언트에서만 렌더링돼 브라우저 local timezone이
+ * 곧 KST이므로 원래도 안전하지만, "시간대: Asia/Seoul"을 명시적으로
+ * 보장하기 위해 로컬 접근자(getHours 등) 대신 이 helper를 쓴다.
+ *
+ * 반복 미팅도 이 함수 하나만 쓴다(anchor/계산된 회차 둘 다 mapTaskToEvent/
+ * mapTasksToEventsWithRecurrence가 항상 원본 task를 그대로 넘기므로) —
+ * meetingDetail.time/endTime은 반복 규칙 전체에서 시:분이 고정이라 회차
+ * 날짜와 무관하게 항상 같은 값이다. endTime이 없는 legacy 미팅은 "HH:mm
+ * 미팅"으로, time 자체가 없거나 파싱 실패하면 시간 표시 없이 제목만
+ * 보여준다(요청사항: "파싱 실패 시 기존 title만 표시하는 graceful
+ * fallback"). DB의 Task.title/meetingDetail은 전혀 수정하지 않는다 —
+ * Calendar에 보여줄 문자열만 조합한다.
+ */
+export function formatMeetingTimeLabel(timeIso: string | null, endTimeIso: string | null): string | null {
+  if (!timeIso) return null;
+  const start = new Date(timeIso);
+  if (Number.isNaN(start.getTime())) return null;
+  const startLabel = formatKstTime(start);
+
+  if (endTimeIso) {
+    const end = new Date(endTimeIso);
+    if (!Number.isNaN(end.getTime())) {
+      return `${startLabel}-${formatKstTime(end)} 미팅`;
+    }
+  }
+  return `${startLabel} 미팅`;
+}
+
+/**
  * Calendar에 보여줄 제목 — PROJECT는 "프로젝트명 | 업무명", PERSONAL_GOAL은
- * "목표명 | 업무명", 나머지는 업무명 그대로. 조건에 필요한 값이 비어 있으면
- * (아직 Detail이 없는 등) 업무명만 보여준다.
+ * "목표명 | 업무명", MEETING은 "미팅명 | HH:mm-HH:mm 미팅", 나머지는 업무명
+ * 그대로. 조건에 필요한 값이 비어 있으면(아직 Detail이 없는 등) 제목만
+ * 보여준다.
  */
 export function buildEventTitle(task: TaskWithRelations): string {
   if (task.category === TaskCategory.PROJECT && task.projectDetail?.projectName) {
@@ -31,6 +67,10 @@ export function buildEventTitle(task: TaskWithRelations): string {
   }
   if (task.category === TaskCategory.PERSONAL_GOAL && task.goalName) {
     return `${task.goalName} | ${task.title}`;
+  }
+  if (task.category === TaskCategory.MEETING) {
+    const timeLabel = formatMeetingTimeLabel(task.meetingDetail?.time ?? null, task.meetingDetail?.endTime ?? null);
+    if (timeLabel) return `${task.title} | ${timeLabel}`;
   }
   return task.title;
 }
