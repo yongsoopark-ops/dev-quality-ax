@@ -291,8 +291,9 @@ export function CalendarView({
            통해서만 켜진다 — 필요 없는 주는 원래 렌더링 그대로 손대지
            않는다. 넘치는 일정 Bar는(정책대로) 그 확보된 줄의 경계에서
            깔끔하게 잘리고, native .rbc-show-more row와 우리 custom
-           fallback 배지는 둘 다 이 여백 안에만(bottom:0) 고정되므로
-           구조적으로 절대 겹칠 수 없다. react-big-calendar 내부 코드는
+           fallback 배지는 둘 다 이 여백 안에만(아래 Micro UI Fix로 소폭
+           상향된 bottom 값 기준) 고정되므로 구조적으로 절대 겹칠 수 없다.
+           react-big-calendar 내부 코드는
            전혀 patch하지 않았다 — 이미 라이브러리가 만들어 둔
            DOM/className을 대상으로 한 CSS 배치일 뿐이다. */
         .rbc-month-view .rbc-row-content:not(.rbc-row-content-scrollable) {
@@ -314,12 +315,34 @@ export function CalendarView({
         .rbc-month-view .rbc-month-row[data-more-slot="1"] .rbc-addons-dnd-row-body {
           padding-bottom: 16px;
         }
+        /* Step(Micro UI Fix — Month 더보기 위치 소폭 상향) — cell 하단
+           경계에 라벨이 너무 붙어 보인다는 지적에 따라 3~5px(선택값: 4px)
+           위로 띄운다. top(=clipLine, 일정 Bar와의 경계선)은 절대 그대로
+           두고 — 그래야 일정 Bar와의 겹침 재발 위험이 전혀 없다 — bottom을
+           4px 올리고 그만큼 height를 줄여서(16→12) 바닥에 4px 여백만
+           새로 생기게 한다(전용 slot 총 높이·padding-bottom(16px)은 전혀
+           안 바꿈, MonthOverflowFallback.tsx의 LABEL_UP_SHIFT와 반드시
+           같은 값 유지). */
         .rbc-month-view .rbc-addons-dnd-row-body > .rbc-row:has(> .rbc-row-segment > .rbc-show-more) {
           position: absolute;
           left: 0;
           right: 0;
-          bottom: 0;
-          height: 16px;
+          bottom: 4px;
+          height: 12px;
+        }
+        /* react-big-calendar 기본 .rbc-show-more는 height:auto; line-height:
+           normal이라 자기 font-size(85%)에 맞춘 자연 높이(실측 20px)로
+           그려져 위 wrapper row(12px)보다 커진다 — wrapper 높이만 줄이면
+           show-more 자신은 그걸 무시하고 그대로 넘쳐 그려지므로(실측
+           확인: 기존에도 dndBody 경계를 4px 넘어가 하단이 살짝 잘리고
+           있었다), 이 요소 자체도 명시적으로 같은 높이에 맞춘다 — 한 줄
+           텍스트라 line-height로 세로 중앙 정렬되고, 넘치는 나머지는
+           overflow:hidden으로 깔끔하게 자른다(기존에 잘리던 것과 동일한
+           처리라 회귀 아님). */
+        .rbc-month-view .rbc-addons-dnd-row-body .rbc-show-more {
+          height: 12px;
+          line-height: 12px;
+          overflow: hidden;
         }
         /* Task Bar를 compact/저채도로(요청사항 9) — 높이/여백을 줄이고 radius를
            작게 준다. Month은 RBC가 여러 주(row)에 걸친 이벤트를 각 주마다 별도

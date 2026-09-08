@@ -52,9 +52,20 @@ interface OverflowBadge {
   dayEvents: CalendarTaskEvent[];
 }
 
-// CalendarView.tsx의 padding-bottom/absolute height와 반드시 같은 값 —
-// 그 CSS가 실제로 예약하는 "더보기 전용 줄" 높이다.
+// CalendarView.tsx의 padding-bottom과 반드시 같은 값 — 그 CSS가 실제로
+// 예약하는 "더보기 전용 줄"(clipLine 계산 기준) 전체 높이다. Micro UI
+// Fix(더보기 소폭 상향)로 라벨 자체를 이보다 살짝 낮은 높이로 그리게
+// 됐지만, 일정 Bar와의 경계선(clipLine)은 이 값 그대로 유지한다 — 그래야
+// 예약된 공간의 총량과 "겹침 없는 최상단 경계"가 전혀 바뀌지 않는다.
 const MORE_SLOT_HEIGHT = 16;
+// CalendarView.tsx의 `.rbc-show-more`/wrapper row의 bottom 오프셋과 반드시
+// 같은 값 — top(clipLine)은 그대로 두고 bottom만 이만큼 올려서(그만큼
+// height를 줄여서) cell 하단 경계에 라벨이 너무 붙어 보이는 것만 고친다.
+const LABEL_UP_SHIFT = 4;
+// 실제로 그려지는 라벨 자신의 높이 — top은 여전히 clipLine에 고정, 여기서
+// 줄어든 만큼만 바닥 쪽에 여백이 생긴다(겹침 위험 없음 — 위쪽 경계는 전혀
+// 안 움직였으므로).
+const LABEL_HEIGHT = MORE_SLOT_HEIGHT - LABEL_UP_SHIFT;
 
 function scanOverflow(container: HTMLElement, events: CalendarTaskEvent[], viewDate: Date): OverflowBadge[] {
   const containerRect = container.getBoundingClientRect();
@@ -222,13 +233,25 @@ export function MonthOverflowFallback({
           key={badge.key}
           type="button"
           // CalendarView.tsx의 `.rbc-addons-dnd-row-body` CSS(padding-bottom
-          // + overflow:hidden)가 이 top/height 영역엔 일정 Bar 픽셀이 아예
-          // 들어올 수 없다고 실제 layout에서 보장한다 — 그래서 이 배지는
-          // "일정 위에 덮어씌우는" 게 아니라 원래부터 비어 있는 전용 줄에
-          // 얹히는 것뿐이다. z-index(30)는 혹시 모를 다른 겹침(예: 배경
-          // 셀 강조 등)에 대한 방어용으로만 남겨둔다.
+          // + overflow:hidden)가 이 top(clipLine) 위쪽엔 일정 Bar 픽셀이
+          // 아예 들어올 수 없다고 실제 layout에서 보장한다 — 그래서 이
+          // 배지는 "일정 위에 덮어씌우는" 게 아니라 원래부터 비어 있는
+          // 전용 줄에 얹히는 것뿐이다. top은 그대로 두고 height만
+          // LABEL_HEIGHT(MORE_SLOT_HEIGHT보다 LABEL_UP_SHIFT만큼 작음)로
+          // 그려서(Micro UI Fix) 바닥 쪽에 살짝 여백이 생기게 한다 — 위쪽
+          // 경계(clipLine)는 전혀 안 움직였으므로 겹침 위험은 그대로 0이다.
+          // z-index(30)는 혹시 모를 다른 겹침(예: 배경 셀 강조 등)에 대한
+          // 방어용으로만 남겨둔다.
           onClick={() => setOpenKey((k) => (k === badge.key ? null : badge.key))}
-          style={{ position: "absolute", top: badge.top, left: badge.left, width: badge.width, height: MORE_SLOT_HEIGHT, zIndex: 30 }}
+          style={{
+            position: "absolute",
+            top: badge.top,
+            left: badge.left,
+            width: badge.width,
+            height: LABEL_HEIGHT,
+            lineHeight: `${LABEL_HEIGHT}px`,
+            zIndex: 30,
+          }}
           className="truncate rounded-sm bg-white/95 px-1.5 text-left text-[11px] font-medium text-navy-700 hover:bg-navy-50 hover:underline"
         >
           +{badge.hiddenCount} 더보기
@@ -238,7 +261,7 @@ export function MonthOverflowFallback({
       {openBadge && (
         <div
           ref={popupRef}
-          style={{ position: "absolute", top: openBadge.top + MORE_SLOT_HEIGHT, left: openBadge.left, zIndex: 40 }}
+          style={{ position: "absolute", top: openBadge.top + LABEL_HEIGHT, left: openBadge.left, zIndex: 40 }}
           className="max-h-64 w-56 overflow-y-auto rounded-lg border border-navy-100 bg-white p-1.5 shadow-lg"
         >
           {openBadge.dayEvents.map((event) => (

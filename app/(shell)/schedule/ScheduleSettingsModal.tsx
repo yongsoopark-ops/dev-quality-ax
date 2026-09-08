@@ -1250,14 +1250,22 @@ export function ScheduleSettingsModal({
             }}
           />
 
+          {/* Step(Month View/프로젝트명 일괄 변경/Date Picker 가시성 개선) —
+              실측 확인: 이 Modal의 스크롤 콘텐츠는 2976px인데 보이는 영역은
+              507px뿐이라(≈6배) "프로젝트 카테고리 관리"(대분류→중분류
+              목록이 길게 이어짐) 밑에 있던 "프로젝트명 일괄 변경"은 그
+              긴 목록을 다 지나야만 보였다 — 찾기 어렵다는 지적의 실제
+              원인. 로직은 그대로 두고 이 섹션만 "프로젝트 카테고리 관리"
+              (가장 긴 섹션)보다 앞으로 옮겨, 위 두 섹션만 지나면 바로
+              보이게 한다. */}
+          <ProjectRenameSection />
+
           <ProjectCategoryHierarchySection
             groups={projectCategoryGroups}
             categories={projectCategories}
             onGroupsChange={onProjectCategoryGroupsChange}
             onCategoriesChange={onProjectCategoriesChange}
           />
-
-          <ProjectRenameSection />
         </div>
       </div>
     </div>
