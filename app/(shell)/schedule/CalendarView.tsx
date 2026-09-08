@@ -3,7 +3,7 @@
 import { useMemo, useRef, useState } from "react";
 import { Calendar, dateFnsLocalizer, type DateHeaderProps, type SlotInfo, type View } from "react-big-calendar";
 import withDragAndDrop, { type EventInteractionArgs } from "react-big-calendar/lib/addons/dragAndDrop";
-import { addDays, format, getDay, isSameDay, parse, startOfWeek } from "date-fns";
+import { addDays, format, getDay, parse, startOfWeek } from "date-fns";
 import { ko } from "date-fns/locale";
 import "react-big-calendar/lib/css/react-big-calendar.css";
 import "react-big-calendar/lib/addons/dragAndDrop/styles.css";
@@ -17,6 +17,7 @@ import {
 import { suppressClicksAfterDragInteraction } from "@/lib/schedule/dragInteraction";
 import { EMPTY_SCHEDULE_FILTERS, filterTasks, type ScheduleFilters } from "@/lib/schedule/filters";
 import { getHolidayName } from "@/lib/schedule/holidays";
+import { isKstToday } from "@/lib/kst";
 import { getEffectiveTaskStatus } from "@/lib/schedule/meetingStatus";
 import type { ProjectCategoryOption, ScheduleOptionInfo, ScheduleUser, TaskWithRelations } from "@/lib/schedule/types";
 import { updateTaskDatesAction } from "./actions";
@@ -42,7 +43,13 @@ import { ScheduleFilterBar } from "./ScheduleFilterBar";
  */
 function MonthDateHeader({ date, label, drilldownView, onDrillDown }: DateHeaderProps) {
   const day = date.getDay();
-  const today = isSameDay(date, new Date());
+  // Hotfix(Production `/schedule` hydration mismatch, React error #418) —
+  // isSameDay(date, new Date())는 "현재 실행 중인 런타임의 로컬 timezone"에
+  // 의존하는 비교였다. Netlify SSR(UTC)과 브라우저 CSR(Asia/Seoul)이 서로
+  // 다른 timezone이라 KST 00:00~08:59 구간마다 서버/클라이언트가 서로 다른
+  // 날짜를 "오늘"로 렌더링해 실제로 재현됐다(완료 보고 참고) — isKstToday로
+  // 바꾸면 실행 런타임과 무관하게 항상 같은 결과를 준다.
+  const today = isKstToday(date);
   const weekdayColor = day === 0 ? "text-red-400" : day === 6 ? "text-blue-400" : "text-navy-950/60";
   const holidayName = getHolidayName(date);
 

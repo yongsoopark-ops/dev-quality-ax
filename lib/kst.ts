@@ -58,6 +58,24 @@ export function kstWallClockToInstant(dateStr: string, timeStr: string): Date {
   return new Date(Date.UTC(y, m - 1, d, hh, mm) - KST_OFFSET_MS);
 }
 
+/**
+ * Hotfix(Production `/schedule` hydration mismatch, React error #418) —
+ * Month/Week View의 "오늘" 판정을 `isSameDay(date, new Date())`처럼 로컬
+ * getter로 직접 비교하면, 그 비교 자체가 "실행 중인 런타임의 로컬
+ * timezone"에 의존하게 된다. Netlify Production 서버(SSR, 런타임 timezone
+ * UTC로 확인됨)와 사용자 브라우저(CSR, Asia/Seoul)가 서로 다른 timezone이라
+ * KST 00:00~08:59 구간(=UTC 전날 15:00~23:59)마다 서버와 클라이언트가 서로
+ * 다른 날짜를 "오늘"로 렌더링해 실제로 하이드레이션 불일치가 재현됐다
+ * (node --eval으로 TZ=UTC vs TZ=Asia/Seoul 비교 재현 확인, 완료 보고 참고).
+ * toKstParts(now)는 getUTC*()만 써서 실행 런타임의 timezone과 무관하게 항상
+ * 같은 결과를 주므로, 이 함수로 "오늘"을 판정하면 서버/클라이언트가 항상
+ * 같은 날짜를 가리킨다 — Schedule의 "오늘" 기준은 이 함수로 통일한다.
+ */
+export function isKstToday(date: Date): boolean {
+  const today = toKstParts(new Date());
+  return date.getFullYear() === today.year && date.getMonth() === today.month && date.getDate() === today.day;
+}
+
 /** calendarDate(Task.startDate처럼 "UTC 자정 기준 달력 날짜"로 저장된 값)의
  * 연/월/일에, timeSource(기존에 저장된 절대 시각)의 KST 기준 시:분만 그대로
  * 얹은 새 절대 시각을 만든다. Schedule에서 미팅을 새 날짜로 옮길 때(시간은

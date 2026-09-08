@@ -1,7 +1,7 @@
 "use client";
 
 import { createContext, useContext, useRef, useState } from "react";
-import { addDays, differenceInCalendarDays, format, isSameDay, startOfWeek } from "date-fns";
+import { addDays, differenceInCalendarDays, format, startOfWeek } from "date-fns";
 import { Navigate, type NavigateAction } from "react-big-calendar";
 import {
   COMMON_ASSIGNEE_TINT,
@@ -17,6 +17,7 @@ import {
 import type { CalendarTaskEvent } from "@/lib/schedule/calendarMapper";
 import { suppressClicksAfterDragInteraction } from "@/lib/schedule/dragInteraction";
 import { getHolidayName } from "@/lib/schedule/holidays";
+import { isKstToday } from "@/lib/kst";
 import { getEffectiveTaskStatus } from "@/lib/schedule/meetingStatus";
 import type { ScheduleOptionInfo, ScheduleUser } from "@/lib/schedule/types";
 
@@ -471,7 +472,11 @@ export function CustomWeekView({ date, events, onSelectEvent, onSelectSlot }: Cu
   // 다른 화면에는 영향 없다(요청사항).
   const weekEndExclusive = addDays(weekStart, VISIBLE_WEEKDAYS);
   const days = Array.from({ length: VISIBLE_WEEKDAYS }, (_, i) => addDays(weekStart, i));
-  const todayColIndex = days.findIndex((d) => isSameDay(d, new Date()));
+  // Hotfix(Production `/schedule` hydration mismatch, React error #418과
+  // 같은 원인 — CalendarView.tsx의 MonthDateHeader 참고) — isSameDay(d, new
+  // Date())는 실행 런타임의 로컬 timezone에 의존해 서버(UTC)/클라이언트
+  // (KST)에서 다른 날짜를 "오늘"로 판정할 수 있었다. isKstToday로 통일한다.
+  const todayColIndex = days.findIndex((d) => isKstToday(d));
 
   const overlapping = events.filter((e) => e.start < weekEndExclusive && e.end > weekStart);
   // Step(담당자 UX 개선) — "공통"(의도적으로 특정 개인 담당자 없음)과

@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { combineDateWithKstTimeOfDay, formatKstTime, kstWallClockToInstant, toKstParts } from "./kst";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { combineDateWithKstTimeOfDay, formatKstTime, isKstToday, kstWallClockToInstant, toKstParts } from "./kst";
 
 /**
  * Hotfix Audit(Production KST/UTC 시간대 오차) — 이 파일의 함수들은 전부
@@ -50,6 +50,39 @@ describe("kstWallClockToInstant", () => {
   it("왕복 변환: kstWallClockToInstant → toKstParts는 원래 입력과 같다", () => {
     const instant = kstWallClockToInstant("2026-09-07", "10:00");
     expect(toKstParts(instant)).toMatchObject({ year: 2026, month: 8, day: 7, hour: 10, minute: 0 });
+  });
+});
+
+describe("isKstToday", () => {
+  const originalTz = process.env.TZ;
+
+  afterEach(() => {
+    process.env.TZ = originalTz;
+    vi.useRealTimers();
+  });
+
+  it("Production hydration mismatch(React error #418) 재현 시나리오 — 서버(UTC) 런타임과 브라우저(KST) 런타임이 같은 순간에도 같은 날짜를 '오늘'로 판정해야 한다", () => {
+    // 실제 재현된 순간: KST 2026-09-09 08:22 = UTC 2026-09-08 23:22 — KST
+    // 자정~08:59 구간이라 UTC 달력 날짜(9/8)와 KST 달력 날짜(9/9)가 다르다.
+    // isSameDay(date, new Date())였던 예전 코드는 이 구간에서 서버(UTC
+    // 런타임)와 클라이언트(KST 런타임)가 서로 다른 날짜를 "오늘"로
+    // 렌더링해 실제 Production(dqax.netlify.app/schedule)에서 hydration
+    // mismatch가 재현됐다(node --eval으로 TZ=UTC/TZ=Asia/Seoul 비교 재현
+    // 확인, 완료 보고 참고).
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-08T23:22:00Z"));
+
+    process.env.TZ = "UTC";
+    const serverCell8 = new Date(2026, 8, 8); // "서버" 런타임에서 만든 9/8 셀
+    const serverCell9 = new Date(2026, 8, 9);
+    expect(isKstToday(serverCell8)).toBe(false);
+    expect(isKstToday(serverCell9)).toBe(true);
+
+    process.env.TZ = "Asia/Seoul";
+    const clientCell8 = new Date(2026, 8, 8); // "클라이언트" 런타임에서 만든 9/8 셀
+    const clientCell9 = new Date(2026, 8, 9);
+    expect(isKstToday(clientCell8)).toBe(false);
+    expect(isKstToday(clientCell9)).toBe(true);
   });
 });
 
