@@ -13,6 +13,7 @@ import { TaskItem, TaskList } from "@tiptap/extension-list";
 import TextAlign from "@tiptap/extension-text-align";
 import { AGENDA_DONE_LABEL } from "@/lib/meetingMinutes/agendaStatus";
 import { MEETING_FIELD_KEY } from "@/lib/meetingMinutes/fieldSemantics";
+import { buildManualAgendaBlockNodes, planManualAgendaInsertion } from "@/lib/meetingMinutes/pendingAgenda";
 import { EMPTY_DOCUMENT_CONTENT } from "@/lib/meetingTemplates/richText";
 
 /**
@@ -249,6 +250,39 @@ const PendingAgendaIdAttribute = Extension.create({
   },
   addProseMirrorPlugins() {
     return [createStickyAttributePlugin("pendingAgendaIdSticky", ["heading"], "pendingAgendaId")];
+  },
+});
+
+/**
+ * Step(주요 안건 신규 추가분 보존 정책) — "안건 N" H3 heading에 origin
+ * ("TEMPLATE"/"CARRIED"/"MANUAL", lib/meetingMinutes/pendingAgenda.ts
+ * AGENDA_ORIGIN 참고)을 심는다. pendingAgendaId와 완전히 같은 패턴
+ * (addGlobalAttributes + sticky 보존)이라 문서를 저장/재로드하거나 다시
+ * 타이핑해도 값이 사라지지 않는다. attrs가 없는(이 기능 이전) 기존 heading은
+ * default:null이고, reset 로직(lib/meetingMinutes/draft.ts)이 null을 항상
+ * TEMPLATE으로 취급하므로 기존 문서 호환에 문제가 없다.
+ */
+const AgendaOriginAttribute = Extension.create({
+  name: "agendaOriginAttribute",
+  addGlobalAttributes() {
+    return [
+      {
+        types: ["heading"],
+        attributes: {
+          agendaOrigin: {
+            default: null,
+            parseHTML: (element: HTMLElement) => element.getAttribute("data-agenda-origin"),
+            renderHTML: (attributes: Record<string, unknown>) => {
+              const value = attributes.agendaOrigin;
+              return value ? { "data-agenda-origin": value } : {};
+            },
+          },
+        },
+      },
+    ];
+  },
+  addProseMirrorPlugins() {
+    return [createStickyAttributePlugin("agendaOriginSticky", ["heading"], "agendaOrigin")];
   },
 });
 
@@ -624,8 +658,52 @@ function LinkPopup({ editor, onClose }: { editor: Editor; onClose: () => void })
  * 링크/표. 각 그룹은 Divider로만 구분하고, 좁은 화면에서는 flex-wrap으로
  * 자연스럽게 다음 줄로 넘어간다(반응형 유지).
  */
-function Toolbar({ editor }: { editor: Editor }) {
+/**
+ * Step(MANUAL 안건 생성 범위 제한) — "안건 추가" 버튼. 커서 위치와 무관하게
+ * 항상 "주요 안건" 섹션의 마지막 안건 뒤에 삽입한다(요청사항: MANUAL은
+ * "주요 안건에 신규 추가된 안건"만 의미해야 하므로, 커서가 다른 섹션(정규
+ * 업무 등)에 있어도 그쪽에 잘못 삽입되면 안 된다).
+ *
+ * 실제 계산(어디에 몇 번으로 넣을지)은 순수 함수 planManualAgendaInsertion
+ * (lib/meetingMinutes/pendingAgenda.ts, DOM 없이 unit test됨)에 전부
+ * 위임한다 — 여기서는 그 결과(배열 index)를 editor.state.doc의 최상위
+ * 자식을 같은 순서로 순회해 ProseMirror 위치로 변환하는 얇은 글루만
+ * 담당한다(editor.getJSON()의 content 배열과 editor.state.doc의 최상위
+ * 자식은 항상 1:1 대응 — 같은 문서를 두 표현으로 본 것뿐이다).
+ *
+ * "주요 안건" 섹션을 찾지 못하면 planManualAgendaInsertion이 에러를
+ * 반환하고, 이 함수는 임의 위치에 넣지 않고 그 메시지를 그대로 돌려줘
+ * 호출부가 안내만 하고 중단하게 한다.
+ */
+function insertManualAgendaBlock(editor: Editor): string | null {
+  const content = editor.getJSON().content ?? [];
+  const plan = planManualAgendaInsertion(content);
+  if ("error" in plan) return plan.error;
+
+  // plan.insertAtIndex는 "주요 안건" 섹션 바로 다음(level<=2) heading의 배열
+  // index다(또는 섹션이 문서 끝까지면 content.length) — 그 heading이
+  // 시작되는 ProseMirror 위치가 곧 "주요 안건 섹션의 끝" 위치다.
+  let insertPos: number | null = plan.insertAtIndex >= content.length ? editor.state.doc.content.size : null;
+  if (insertPos === null) {
+    editor.state.doc.forEach((node, offset, index) => {
+      if (index === plan.insertAtIndex) insertPos = offset;
+    });
+  }
+  if (insertPos === null) {
+    return "\"주요 안건\" 영역의 위치를 찾지 못해 안건을 추가하지 못했습니다.";
+  }
+
+  const nodes = buildManualAgendaBlockNodes(`안건 ${plan.agendaNumber}`);
+  editor.chain().focus().insertContentAt(insertPos, nodes).run();
+  return null;
+}
+
+function Toolbar({ editor, enableManualAgenda }: { editor: Editor; enableManualAgenda: boolean }) {
   const [linkPopupOpen, setLinkPopupOpen] = useState(false);
+  // Step(MANUAL 안건 생성 범위 제한) — "주요 안건" 영역을 찾지 못했을 때
+  // 임의 위치에 넣지 않고 안내만 하고 멈춘다(요청사항). 기존 TemplateEditor.tsx의
+  // {error && <p className="text-xs text-red-600">...</p>} 패턴을 그대로 따른다.
+  const [manualAgendaError, setManualAgendaError] = useState<string | null>(null);
 
   // Bold/Italic/목록/정렬/표/Undo-Redo/링크 버튼의 활성·비활성 표시를 전부
   // 여기 한 곳에서 구독한다(useEditorState 이유는 ParagraphStyleSelect 주석
@@ -740,6 +818,20 @@ function Toolbar({ editor }: { editor: Editor }) {
         label="▦"
         title="표 삽입"
       />
+      {enableManualAgenda && (
+        <div className="relative">
+          <ToolbarButton
+            onClick={() => setManualAgendaError(insertManualAgendaBlock(editor))}
+            label="📌+"
+            title="안건 추가 — 완료 처리와 무관하게 항상 다음 회의록에도 그대로 유지됩니다"
+          />
+          {manualAgendaError && (
+            <p className="absolute top-full left-0 z-10 mt-1 w-max max-w-xs rounded bg-white p-1.5 text-xs text-red-600 shadow-sm">
+              {manualAgendaError}
+            </p>
+          )}
+        </div>
+      )}
       {toolbarState.isTable && (
         <>
           <ToolbarButton onClick={() => editor.chain().focus().addRowAfter().run()} label="+행" title="아래 행 추가" />
@@ -756,9 +848,18 @@ function Toolbar({ editor }: { editor: Editor }) {
 export function TemplateRichTextEditor({
   value,
   onChange,
+  enableManualAgenda = false,
 }: {
   value: JSONContent;
   onChange: (content: JSONContent) => void;
+  /** Step(MANUAL 안건 생성 범위 제한) — 이 Editor는 Template 편집(meeting-templates)과
+   * 실제 Meeting Minutes Draft 편집(meeting-minutes-preview)에 공용으로
+   * 쓰인다. "안건 추가"는 Draft 편집에서만 의미가 있다(Template에는 아직
+   * 실제로 진행 중인 회의가 없어 "신규 추가된 안건" 개념 자체가 성립하지
+   * 않는다) — 그래서 기본값 false, Draft 쪽 호출부(MeetingMinutesPreviewClient.tsx)만
+   * 명시적으로 true를 넘긴다. 컴포넌트를 복제하지 않고 이 prop 하나로
+   * 갈린다(요청사항). */
+  enableManualAgenda?: boolean;
 }) {
   const extensions = useMemo(
     () => [
@@ -793,6 +894,7 @@ export function TemplateRichTextEditor({
       FieldKeyAttribute,
       TableRoleAttribute,
       PendingAgendaIdAttribute,
+      AgendaOriginAttribute,
     ],
     [],
   );
@@ -821,7 +923,7 @@ export function TemplateRichTextEditor({
     // 원래 자리에) 붙어버린다. 모서리 둥글기는 Toolbar/EditorContent 양쪽에
     // 나눠 줘서(rounded-t-md/rounded-b-md) 시각적으로는 예전과 동일하다.
     <div className="rounded-md border border-navy-100 bg-white shadow-sm">
-      <Toolbar editor={editor} />
+      <Toolbar editor={editor} enableManualAgenda={enableManualAgenda} />
       <div className="overflow-hidden rounded-b-md">
         <EditorContent editor={editor} />
       </div>

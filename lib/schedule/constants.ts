@@ -1,3 +1,5 @@
+import { toKstParts } from "@/lib/kst";
+
 /** /schedule page.tsx가 ProjectCategory/TaskCategoryOption/TaskStatusOption
  * 목록을 캐시할 때 쓰는 키. "use server" 파일(actions.ts)은 함수 외의 export를
  * 허용하지 않아 여기 둔다. 저장 계열 함수들이 저장 직후 이 키로 무효화한다. */
@@ -148,10 +150,20 @@ export function getUserInitials(name: string | null | undefined, fallback: strin
  * (시간 정보 없음)이라, 당일 오후에 열리는 미팅도 자정이 지났다는 이유만으로
  * "지연"으로 잘못 표시되는 문제가 있었다(실사용 검증에서 발견). MEETING은
  * 예정/진행중/완료 자동 상태(getEffectiveTaskStatus)가 이미 시간 정보를 전부
- * 담고 있어 "지연" 배지가 따로 필요 없다 — category가 MEETING이면 항상 false. */
+ * 담고 있어 "지연" 배지가 따로 필요 없다 — category가 MEETING이면 항상 false.
+ *
+ * Step(진행중 일정 overdue 정책 변경) — 기존에는 `due.getTime() < Date.now()`로
+ * 비교해, dueDate 당일도 UTC 자정(=KST 오전 9시)이 지나는 순간부터 이미
+ * "지연"으로 표시되는 문제가 있었다(당일까지는 아직 완료 대상 기간이지 지연이
+ * 아니다 — 요청사항). dueDate는 "달력 날짜"(UTC 자정 기준, lib/kst.ts 주석 참고)로
+ * 저장되므로, 같은 표현으로 만든 "오늘의 KST 달력 날짜(UTC 자정)"와 날짜
+ * 단위로만 비교한다 — dueDate 당일(오늘 == dueDate)은 지연이 아니고, 그
+ * 다음날부터(오늘 > dueDate) 지연이다. */
 export function isTaskOverdue(dueDate: Date | string, statusOptionId: string, category?: string): boolean {
   if (category === TASK_CATEGORY_KEY.MEETING) return false;
   if (statusOptionId === TASK_STATUS_KEY.DONE) return false;
   const due = typeof dueDate === "string" ? new Date(dueDate) : dueDate;
-  return due.getTime() < Date.now();
+  const { year, month, day } = toKstParts(new Date());
+  const todayCalendarMs = Date.UTC(year, month, day);
+  return todayCalendarMs > due.getTime();
 }

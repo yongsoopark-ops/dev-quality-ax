@@ -576,7 +576,14 @@ export function MeetingMinutesPreviewClient({
           자동저장을 예약한다(handleLoadSchedule/handleReset은 이 경로를
           거치지 않고 setDocumentContent를 직접 호출한다). */}
       {documentContent && (
-        <TemplateRichTextEditor key={`${draft.meetingType}-${reloadNonce}`} value={documentContent} onChange={handleEditorChange} />
+        <TemplateRichTextEditor
+          key={`${draft.meetingType}-${reloadNonce}`}
+          value={documentContent}
+          onChange={handleEditorChange}
+          // Step(MANUAL 안건 생성 범위 제한) — 실제 주간 회의록 작성본에서만
+          // "안건 추가"를 노출한다(Template 편집 화면은 기본값 false 그대로).
+          enableManualAgenda
+        />
       )}
     </div>
   );

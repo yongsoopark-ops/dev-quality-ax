@@ -1,4 +1,5 @@
 import { TASK_CATEGORY_KEY, TASK_STATUS_KEY } from "@/lib/schedule/constants";
+import { toKstParts } from "@/lib/kst";
 import type { TaskWithRelations } from "@/lib/schedule/types";
 
 /**
@@ -39,21 +40,43 @@ export function computeMeetingOccurrenceStatus(occurrenceDate: Date, startTimeIs
 }
 
 /**
- * Calendar(Month/Week)와 TaskDetailPanel이 "표시할 상태"를 결정할 때 공통으로
- * 부르는 진입점. MEETING이 아니면 항상 저장된 statusOptionId를 그대로 쓴다
- * (다른 업무구분은 이번 Step 대상이 아니다 — 회귀 없음).
+ * Step(예정 → 진행중 자동 상태 표시) — MEETING 이외 모든 업무구분 공용. DB의
+ * statusOptionId는 절대 갱신하지 않고 표시용으로만 계산한다(요청사항: "매일
+ * 강제 UPDATE하지 않는다"). 저장된 값이 예약 "TODO"일 때만 관여하고, 그
+ * 외(IN_PROGRESS/DONE/ON_HOLD/사용자 정의 상태)는 그대로 존중한다 — 신규
+ * 옵션은 기본 GENERIC 동작, 사람이 고른 값을 자동 계산이 덮어쓰지 않는다.
  *
- * MEETING이라도 저장된 statusOptionId가 TODO/IN_PROGRESS/DONE 예약 3종이
- * 아니면(예: 사용자가 "보류"로 직접 바꿨거나, 사용자 정의 상태를 골랐다면)
- * 그 값을 그대로 존중한다 — 예외적으로 사람이 개입해야 하는 상태는 자동 계산이
+ * startDate도 dueDate와 같은 "달력 날짜"(UTC 자정 기준)라 오늘의 KST 달력
+ * 날짜(toKstParts 기반, lib/kst.ts 참고)와 날짜 단위로만 비교한다 — 오늘이
+ * startDate 이후(오늘 >= startDate)면 진행중으로 표시한다.
+ */
+function computeGeneralEffectiveStatus(statusOptionId: string, startDate: Date | string, now: Date): string {
+  if (statusOptionId !== TASK_STATUS_KEY.TODO) return statusOptionId;
+  const { year, month, day } = toKstParts(now);
+  const todayCalendarMs = Date.UTC(year, month, day);
+  const start = typeof startDate === "string" ? new Date(startDate) : startDate;
+  return todayCalendarMs >= start.getTime() ? TASK_STATUS_KEY.IN_PROGRESS : statusOptionId;
+}
+
+/**
+ * Calendar(Month/Week)가 "표시할 상태"를 결정할 때 공통으로 부르는 진입점.
+ *
+ * MEETING이면 저장된 statusOptionId가 TODO/IN_PROGRESS/DONE 예약 3종이 아닐
+ * 때(예: 사용자가 "보류"로 직접 바꿨거나, 사용자 정의 상태를 골랐다면) 그
+ * 값을 그대로 존중한다 — 예외적으로 사람이 개입해야 하는 상태는 자동 계산이
  * 절대 덮어쓰지 않는다(요청사항: 자동 상태와 수동 예외 상태 충돌 방지).
- *
  * endTime이 없는(레거시) 미팅도 안전하게 저장된 값을 그대로 쓴다 — 이 컬럼이
  * 생기기 전에는 자동 계산 자체가 없었으므로, 새 로직이 옛 데이터를 잘못
  * 재해석하지 않게 하기 위한 안전장치다.
+ *
+ * MEETING이 아니면 computeGeneralEffectiveStatus(예정→진행중, 요청사항)로
+ * 넘긴다 — TaskDetailPanel의 MEETING 전용 실시간 미리보기는 이 함수를 쓰지
+ * 않고 별도 계산을 유지한다(범위 밖, 회귀 없음).
  */
 export function getEffectiveTaskStatus(task: TaskWithRelations, occurrenceDate: Date, now: Date = new Date()): string {
-  if (task.category !== TASK_CATEGORY_KEY.MEETING) return task.status;
+  if (task.category !== TASK_CATEGORY_KEY.MEETING) {
+    return computeGeneralEffectiveStatus(task.status, task.startDate, now);
+  }
   if (!AUTO_MANAGED_STATUSES.includes(task.status)) return task.status;
 
   const startTimeIso = task.meetingDetail?.time ?? null;

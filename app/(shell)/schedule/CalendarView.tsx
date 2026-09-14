@@ -7,7 +7,7 @@ import { addDays, format, getDay, parse, startOfWeek } from "date-fns";
 import { ko } from "date-fns/locale";
 import "react-big-calendar/lib/css/react-big-calendar.css";
 import "react-big-calendar/lib/addons/dragAndDrop/styles.css";
-import { mapTasksToEventsWithRecurrence, type CalendarTaskEvent } from "@/lib/schedule/calendarMapper";
+import { mapTasksToEventsWithRecurrence, sortEventsForMonthCalendar, type CalendarTaskEvent } from "@/lib/schedule/calendarMapper";
 import {
   TASK_CATEGORY_KEY as TaskCategory,
   TASK_STATUS_KEY as TaskStatus,
@@ -23,6 +23,7 @@ import type { ProjectCategoryOption, ScheduleOptionInfo, ScheduleUser, TaskWithR
 import { updateTaskDatesAction } from "./actions";
 import { CalendarToolbar } from "./CalendarToolbar";
 import { CustomWeekView, WeekViewUsersContext } from "./CustomWeekView";
+import TierAwareMonthView from "./TierAwareMonthView";
 import { MonthOverflowFallback } from "./MonthOverflowFallback";
 import { ScheduleFilterBar } from "./ScheduleFilterBar";
 
@@ -185,10 +186,12 @@ export function CalendarView({
   // 다시 계산된다 — 반복 회차가 "그 시점엔 안 보이다가" 갑자기 사라지는 경계는
   // 사실상 발생하지 않는다(한 화면에 필요한 범위보다 훨씬 넓다).
   const recurrenceRange = useMemo(() => ({ start: addDays(date, -45), end: addDays(date, 45) }), [date]);
-  const events = useMemo(
-    () => mapTasksToEventsWithRecurrence(visibleTasks, recurrenceRange.start, recurrenceRange.end),
-    [visibleTasks, recurrenceRange],
-  );
+  const events = useMemo(() => {
+    const mapped = mapTasksToEventsWithRecurrence(visibleTasks, recurrenceRange.start, recurrenceRange.end);
+    // Step(월 캘린더 정렬 우선순위) — Month View만 대상이다(Week View는
+    // CustomWeekView 자체 lane-packing을 그대로 둔다 — 요청 범위 밖).
+    return sortEventsForMonthCalendar(mapped, taskCategoryOptions);
+  }, [visibleTasks, recurrenceRange, taskCategoryOptions]);
 
   /**
    * Drag/Resize 공통 저장 경로. 화면은 즉시 이동된 것처럼 낙관적으로 갱신하고,
@@ -445,7 +448,7 @@ export function CalendarView({
             localizer={localizer}
             culture="ko"
             messages={messages}
-            views={{ month: true, week: CustomWeekView }}
+            views={{ month: TierAwareMonthView, week: CustomWeekView }}
             view={view}
             onView={setView}
             date={date}

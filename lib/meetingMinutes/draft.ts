@@ -3,7 +3,13 @@
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { normalizeAgendaDoneCells } from "@/lib/meetingMinutes/agendaStatus";
-import { extractMeetingDateTimeLabel, extractPendingAgendaItems } from "@/lib/meetingMinutes/pendingAgenda";
+import {
+  appendManualAgendaBlocks,
+  extractManualAgendaBlocks,
+  extractMeetingDateTimeLabel,
+  extractPendingAgendaItems,
+  insertPendingAgendaBlocks,
+} from "@/lib/meetingMinutes/pendingAgenda";
 import { getActiveMeetingTemplateAction } from "@/lib/meetingTemplates/actions";
 import { MEETING_TEMPLATE_TYPE_LABELS } from "@/lib/meetingTemplates/constants";
 import { parseDocumentContentInput, validateDocumentContent } from "@/lib/meetingTemplates/richText";
@@ -306,21 +312,34 @@ export async function resetMeetingMinutesDraftAction(meetingType: MeetingTemplat
   const session = await requireUser();
   if (!SUPPORTED_TYPES.includes(meetingType)) return { error: "아직 지원하지 않는 회의 유형입니다." };
 
-  // Step(미결 안건 이월) — 지금 지워질 Draft 안의 "미결" 안건만 별도 표
-  // (MeetingMinutesPendingAgenda)에 스냅샷으로 남긴다(완료 안건은 캡처하지
-  // 않는다 — 다음 회의로 이월할 필요가 없으므로). 이 표는 Draft와 완전히
-  // 독립적이라 바로 다음 upsert가 Draft를 덮어써도 사라지지 않는다. 정책상
-  // "같은 이슈가 여러 회차 연속 미결이어도 매번 새 Row를 만든다"(기존 Row
-  // 갱신 금지) — 그래서 무조건 create만 하고, update/upsert는 하지 않는다.
+  // Step(주요 안건 초기화 정책 — 완료 삭제/미결 자동 유지) — 지금 지워질
+  // Draft 안의 "미결" 안건만 뽑는다(완료 안건은 extractPendingAgendaItems가
+  // 애초에 제외한다 — 다음 회의로 이월할 필요가 없으므로, 이게 곧 "완료된
+  // 주요 안건은 삭제 대상"이라는 요청사항이다). MeetingMinutesPendingAgenda에
+  // 스냅샷으로도 남긴다(기존 "미결 안건 불러오기" 수동 버튼과 호환 유지 —
+  // 이 표는 그 버튼이 계속 참조한다). 정책상 "같은 이슈가 여러 회차 연속
+  // 미결이어도 매번 새 Row를 만든다"(기존 Row 갱신 금지) — 그래서 무조건
+  // create만 하고, update/upsert는 하지 않는다.
+  let carriedRows: { id: string; title: string; content: string; decision: string; owner: string }[] = [];
+  let manualBlocks: JSONContent[] = [];
+
   const existingBeforeReset = await prisma.meetingMinutesDraft.findUnique({ where: { meetingType } });
   if (existingBeforeReset) {
     const existingDoc = JSON.parse(existingBeforeReset.documentContent) as JSONContent;
+
+    // Step(주요 안건 신규 추가분 보존 정책) — MANUAL(사용자가 "안건 추가"
+    // 버튼으로 신규 등록한 안건)은 완료 여부와 무관하게 항상 원본 그대로
+    // 보존한다(요청사항). extractPendingAgendaItems가 이 origin의 블록을
+    // 이미 제외하므로, 여기서 별도로(텍스트 재구성 없이 원본 JSON 그대로)
+    // 뽑아 아래에서 그대로 이어붙인다 — 완료/미결 판정 자체를 하지 않는다.
+    manualBlocks = extractManualAgendaBlocks(existingDoc);
+
     const pendingItems = extractPendingAgendaItems(existingDoc);
     if (pendingItems.length > 0) {
       const sourceLabel = extractMeetingDateTimeLabel(existingDoc);
-      await prisma.meetingMinutesPendingAgenda.createMany({
-        data: pendingItems.map((item) => ({ meetingType, sourceLabel, ...item })),
-      });
+      carriedRows = await Promise.all(
+        pendingItems.map((item) => prisma.meetingMinutesPendingAgenda.create({ data: { meetingType, sourceLabel, ...item } })),
+      );
     }
   }
 
@@ -330,9 +349,28 @@ export async function resetMeetingMinutesDraftAction(meetingType: MeetingTemplat
     return { draft: { meetingType, templateName: null, document: null, templateMissing: true, templateOutdated: false, version: 0 } };
   }
 
+  // MANUAL 안건을 먼저 원본 그대로 이어붙인 뒤(순서 유지), 미결(TEMPLATE/
+  // CARRIED) 안건을 그 뒤에 자동으로 다시 끼워 넣는다(요청사항: "미결 안건 →
+  // 내용 유지, 다음 회의록에서도 그대로 이어짐" — 버튼 클릭 없이 자동으로).
+  // insertPendingAgendaBlocks가 각 블록에 pendingAgendaId를 심어 두므로,
+  // 이후 사용자가 기존 "미결 안건 불러오기" 버튼을 눌러도(이미 같은 id가
+  // 문서에 있어) 중복 삽입되지 않는다 — 그래서 자동 이월 직후 이 Row들을
+  // 곧바로 consumedAt 처리해 다시 이월 후보로 잡히지 않게 한다.
+  let documentToSave = appendManualAgendaBlocks(cloned.document, manualBlocks);
+  if (carriedRows.length > 0) {
+    const { document, insertedIds } = insertPendingAgendaBlocks(documentToSave, carriedRows);
+    documentToSave = document;
+    if (insertedIds.length > 0) {
+      await prisma.meetingMinutesPendingAgenda.updateMany({
+        where: { id: { in: insertedIds } },
+        data: { consumedAt: new Date() },
+      });
+    }
+  }
+
   const data = {
     meetingType,
-    documentContent: JSON.stringify(cloned.document),
+    documentContent: JSON.stringify(documentToSave),
     sourceTemplateId: cloned.templateId,
     sourceTemplateUpdatedAt: cloned.templateUpdatedAt ? new Date(cloned.templateUpdatedAt) : null,
     updatedBy: session.user.id,
@@ -348,7 +386,7 @@ export async function resetMeetingMinutesDraftAction(meetingType: MeetingTemplat
     draft: {
       meetingType,
       templateName: cloned.templateName ?? null,
-      document: cloned.document,
+      document: documentToSave,
       templateMissing: false,
       templateOutdated: false,
       version: saved.version,

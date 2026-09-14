@@ -2,7 +2,7 @@ import { differenceInCalendarDays } from "date-fns";
 import { formatKstTime } from "@/lib/kst";
 import { TASK_CATEGORY_KEY as TaskCategory } from "@/lib/schedule/constants";
 import { computeRecurringOccurrenceDates } from "@/lib/schedule/recurrence";
-import type { TaskWithRelations } from "@/lib/schedule/types";
+import type { ScheduleOptionInfo, TaskWithRelations } from "@/lib/schedule/types";
 
 export interface CalendarTaskEvent {
   id: string;
@@ -19,6 +19,13 @@ export interface CalendarTaskEvent {
    * EventBar) — 실제 Task Row가 없어 updateTaskDatesAction으로 저장할 대상
    * 자체가 없기 때문이다. */
   isRecurringOccurrence?: boolean;
+  /** Step(Month Calendar 실제 표시 순서 보장) — sortEventsForMonthCalendar가
+   * 계산해 찍어두는 tier 값(getMonthCalendarSortTier 참고). react-big-calendar
+   * Month view가 주(week) 단위로 이벤트 순서를 자체 재계산(sortWeekEvents →
+   * localizer.sortEvents, start/end/allDay만 참조)해 애플리케이션 레벨 정렬
+   * 순서를 되돌리기 때문에, TierAwareMonthView가 이 값을 이벤트 객체에서 직접
+   * 읽어 react-big-calendar의 재정렬 결과 위에 안정 정렬 한 번을 더 적용한다. */
+  monthCalendarTier?: number;
 }
 
 /**
@@ -135,4 +142,68 @@ export function mapTasksToEventsWithRecurrence(tasks: TaskWithRelations[], range
   }
 
   return events;
+}
+
+/** Step(월 캘린더 정렬 우선순위) — meetingReportSection 값 → 정렬 순번.
+ * 요청사항 순서(정규 프로젝트 > 서브 > 공통 > 예외 > 출장) 그대로다. */
+const MONTH_CALENDAR_SECTION_PRIORITY: Record<string, number> = {
+  REGULAR_PROJECT: 1,
+  SUB_PROJECT: 2,
+  COMMON: 3,
+  EXCEPTION: 4,
+  BUSINESS_TRIP: 5,
+};
+
+/**
+ * "파트 공통 일정"(task.isCommonAssignee — 담당자를 지정하지 않고 의도적으로
+ * 팀 전체 업무로 등록한 일정)이 항상 최우선(0)이다. 이는 업무구분의 "공통"
+ * (TaskCategoryOption.meetingReportSection === "COMMON")과 서로 다른 개념이라
+ * 혼동하지 않는다 — 파트 공통 일정이 아니면 categoryOptionId로 조회한
+ * meetingReportSection 순서를 따른다. meetingReportSection이 없는 업무구분
+ * (MEETING/VACATION/HALF_DAY 등)은 요청사항에 우선순위가 명시돼 있지 않아
+ * 안전하게 맨 뒤(6)로 둔다.
+ */
+export function getMonthCalendarSortTier(event: CalendarTaskEvent, options: ScheduleOptionInfo[]): number {
+  if (event.task.isCommonAssignee) return 0;
+  const section = options.find((o) => o.id === event.task.category)?.meetingReportSection;
+  return section ? (MONTH_CALENDAR_SECTION_PRIORITY[section] ?? 6) : 6;
+}
+
+/**
+ * Step(월 캘린더 일정 정렬 우선순위 변경) — 같은 날짜에 여러 일정이 있을 때
+ * Month View 표시 순서: 파트 공통 일정 > 정규 프로젝트 > 서브 > 공통 > 예외 >
+ * 출장(getMonthCalendarSortTier 참고). Array.prototype.sort는 안정 정렬이라
+ * 같은 tier 안의 상대 순서는 건드리지 않는다 — 그래서 기존 2차 정렬(page.tsx의
+ * startDate asc 조회 + 반복 회차 계산 순서)이 tier가 같은 일정끼리는 그대로
+ * 보존된다(요청사항 4-1). 입력 배열을 그 자리에서 정렬(in-place)하고 그대로
+ * 반환한다 — mapTasksToEventsWithRecurrence가 매번 새 배열을 만들어 주므로
+ * 호출부에서 별도 복제가 필요 없다.
+ *
+ * Step(Month Calendar 실제 표시 순서 보장) — 이 함수의 정렬 결과는
+ * react-big-calendar Month view 내부에서 그대로 유지되지 않는다(감사 결과:
+ * Month.js가 주 단위로 자체 sortWeekEvents를 다시 실행해 덮어씀). 그래서 각
+ * 이벤트에 계산된 tier 값을 `monthCalendarTier`로 함께 찍어둔다 —
+ * TierAwareMonthView(app/(shell)/schedule/TierAwareMonthView.tsx)가
+ * react-big-calendar 자체 정렬 결과 위에 이 값 기준 안정 정렬을 한 번 더
+ * 적용할 때 재사용한다(같은 tier 우선순위 map을 중복 정의하지 않기 위함).
+ */
+export function sortEventsForMonthCalendar(events: CalendarTaskEvent[], options: ScheduleOptionInfo[]): CalendarTaskEvent[] {
+  for (const event of events) {
+    event.monthCalendarTier = getMonthCalendarSortTier(event, options);
+  }
+  return events.sort((a, b) => getMonthCalendarSortTier(a, options) - getMonthCalendarSortTier(b, options));
+}
+
+/**
+ * Step(Month Calendar 실제 표시 순서 보장) — react-big-calendar Month view가
+ * 주(week) 단위로 자체 정렬(sortWeekEvents, "기존 second-order")을 다시 계산한
+ * 결과 위에, tier 기준 안정 정렬을 한 번 더 적용해 실제 화면 순서를 확정한다.
+ * TierAwareMonthView.tsx(react-big-calendar Month 클래스를 상속한 커스텀 View,
+ * renderWeek 재정의)에서 호출하는 것과 정확히 같은 함수를 여기 두어, DOM 없이
+ * (react-big-calendar의 순수 유틸 sortWeekEvents/inRange만으로) 실제 library
+ * ordering 경로 수준에서 단위 테스트할 수 있게 한다. tier가 없는(계산 안 된)
+ * 이벤트는 가장 낮은 우선순위(6, 기타)로 취급한다.
+ */
+export function applyMonthCalendarTierOrder(librarySorted: CalendarTaskEvent[]): CalendarTaskEvent[] {
+  return [...librarySorted].sort((a, b) => (a.monthCalendarTier ?? 6) - (b.monthCalendarTier ?? 6));
 }

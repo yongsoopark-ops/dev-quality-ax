@@ -1,4 +1,4 @@
-import type { Role } from "@/app/generated/prisma/enums";
+import type { MeetingReportSection, Role } from "@/app/generated/prisma/enums";
 import type { RecurrenceRule, Weekday } from "@/lib/schedule/recurrence";
 
 export interface ScheduleUser {
@@ -18,6 +18,13 @@ export interface ScheduleOptionInfo {
   color: string;
   order: number;
   active: boolean;
+  /** Step(월 캘린더 정렬 우선순위) — TaskCategoryOption에만 실제로 존재하는
+   * 컬럼이다(TaskStatusOption 조회 결과에는 원래부터 없어 항상 undefined) —
+   * optional로 둬 두 옵션 목록이 계속 이 타입 하나를 공유할 수 있게 한다.
+   * page.tsx가 Prisma Row를 그대로 내려주므로(별도 select 없음) 이 필드
+   * 추가는 새 쿼리/스키마 변경이 아니라 기존에 이미 내려오던 값에 타입만
+   * 맞추는 것이다. */
+  meetingReportSection?: MeetingReportSection | null;
 }
 
 /** 로그인한 현재 User — Update/Reply/Revision의 수정·삭제 버튼을 보여줄지
