@@ -187,7 +187,7 @@ export async function loadWeeklyScheduleIntoDraftAction(
       // 구분하려면 이 값이 반드시 필요하다(요청사항 1) — assignees가
       // 비어 있다는 사실만으로는 둘을 구분할 수 없다.
       isCommonAssignee: true,
-      assignees: { select: { user: { select: { name: true, email: true, createdAt: true } } } },
+      assignees: { select: { user: { select: { id: true, name: true, email: true, createdAt: true } } } },
       projectDetail: { select: { projectName: true } },
       categoryOption: { select: { meetingReportSection: true } },
       scheduleRevisions: { orderBy: { revisionNo: "desc" }, take: 1, select: { startDate: true, dueDate: true } },
@@ -206,6 +206,7 @@ export async function loadWeeklyScheduleIntoDraftAction(
         projectName: t.projectDetail?.projectName ?? null,
         goalName: t.goalName,
         assigneeNames: t.assignees.map((a) => a.user.name ?? a.user.email),
+        assigneeUserIds: t.assignees.map((a) => a.user.id),
         isCommonAssignee: t.isCommonAssignee,
         startDate: effectiveStart,
         dueDate: effectiveDue,
@@ -216,12 +217,13 @@ export async function loadWeeklyScheduleIntoDraftAction(
   // Step(담당자별 그룹핑) — 담당자 정렬은 하드코딩된 이름 순서가 아니라
   // 이미 이 코드베이스가 쓰는 안정적 기준(admin/users 목록의
   // createdAt asc)을 재사용한다(lib/meetingMinutes/build.ts 상단 주석
-  // 참고). 같은 이름이 여러 Task에 걸쳐 나와도 Map이라 한 번만 기록된다.
+  // 참고). Step(담당자 View Filter + 안전한 Block 단위 저장)부터 key가
+  // 이름이 아니라 User.id다(동명이인 안전, 요청사항 14) — 같은 id가 여러
+  // Task에 걸쳐 나와도 Map이라 한 번만 기록된다.
   const assigneeSortKeys = new Map<string, number>();
   for (const t of tasks) {
     for (const a of t.assignees) {
-      const name = a.user.name ?? a.user.email;
-      if (!assigneeSortKeys.has(name)) assigneeSortKeys.set(name, a.user.createdAt.getTime());
+      if (!assigneeSortKeys.has(a.user.id)) assigneeSortKeys.set(a.user.id, a.user.createdAt.getTime());
     }
   }
 

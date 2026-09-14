@@ -10,6 +10,7 @@ import {
   extractPendingAgendaItems,
   insertPendingAgendaBlocks,
 } from "@/lib/meetingMinutes/pendingAgenda";
+import { mergeFilteredSave } from "@/lib/meetingMinutes/filteredSave";
 import { getActiveMeetingTemplateAction } from "@/lib/meetingTemplates/actions";
 import { MEETING_TEMPLATE_TYPE_LABELS } from "@/lib/meetingTemplates/constants";
 import { parseDocumentContentInput, validateDocumentContent } from "@/lib/meetingTemplates/richText";
@@ -292,6 +293,72 @@ export async function saveMeetingMinutesDraftAction(
     return { savedAt: created.updatedAt.toISOString(), version: created.version };
   }
   return { conflict: true, version: current.version };
+}
+
+/** Step(담당자 View Filter + 안전한 Block 단위 저장) — 담당자 필터 모드
+ * 전용 저장. 위 saveMeetingMinutesDraftAction(전체 overwrite)과 달리 서버
+ * 최신 문서를 다시 읽어(`existing`), 그 위에 선택 담당자의 필터 대상 Block
+ * 만 client 값으로 병합한다(mergeFilteredSave, lib/meetingMinutes/
+ * filteredSave.ts — 실제 판단 로직은 전부 그 순수 함수가 담당). 다른
+ * 담당자/공용 영역은 항상 서버 최신 그대로 유지된다(요청사항 7).
+ *
+ * baseDocument는 client가 이 필터 편집을 시작한(또는 마지막으로 성공
+ * 저장한) 시점에 알고 있던 전체 문서다 — mergeFilteredSave가 이 값과 서버
+ * 최신값을 Block 단위로 비교해 "그 사이 다른 사람이 같은 Block을 먼저
+ * 바꿨는지"(요청사항 10 SAME_BLOCK_CONFLICT)를 판정한다. 하나라도
+ * 충돌하면 이번 저장 전체를 반영하지 않는다(요청사항: "conflict 발생 →
+ * 저장하지 않음") — 부분 반영·last-write-wins 둘 다 하지 않는다.
+ *
+ * 최종 DB 반영도 optimistic concurrency(version)로 보호한다(요청사항 11)
+ * — read→merge→conditional update 사이에 다른 저장이 끼어들 수 있으므로,
+ * version 불일치 시 최대 1회까지만 다시 읽고 다시 병합해 재시도한다(무한
+ * retry 금지). 그래도 실패하면 conflict로 알린다. */
+export async function saveMeetingMinutesDraftFilteredAction(
+  meetingType: MeetingTemplateType,
+  baseDocument: unknown,
+  currentDocument: unknown,
+  selectedUserId: string,
+): Promise<{ savedAt?: string; version?: number; conflict?: true; conflictedBlockKeys?: string[]; mergedDocumentJson?: string; error?: string }> {
+  const session = await requireUser();
+  if (!SUPPORTED_TYPES.includes(meetingType)) return { error: "아직 지원하지 않는 회의 유형입니다." };
+  if (!selectedUserId) return { error: "담당자 필터가 선택되지 않았습니다." };
+
+  const base = validateDocumentContent(parseDocumentContentInput(baseDocument));
+  const current = validateDocumentContent(parseDocumentContentInput(currentDocument));
+  if (!base || !current) return { error: "저장할 회의록 문서 내용이 올바르지 않습니다." };
+
+  const MAX_RETRIES = 1;
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    const existing = await prisma.meetingMinutesDraft.findUnique({ where: { meetingType } });
+    if (!existing) return { error: "회의록을 찾을 수 없습니다. 화면을 새로고침한 뒤 다시 시도해 주세요." };
+
+    const serverDocumentJson = existing.documentContent;
+    const serverDoc = JSON.parse(serverDocumentJson) as JSONContent;
+    const { merged, conflictedBlockKeys } = mergeFilteredSave(serverDoc, base, current, selectedUserId);
+
+    if (conflictedBlockKeys.length > 0) {
+      // 다른 사용자가 같은 Block을 그 사이 먼저 저장했다 — 이번 저장은
+      // 전혀 반영하지 않는다. 서버 최신 문서는 함께 돌려줘 Client가 최신화할
+      // 수 있게 한다(요청사항 6/12와 동일한 "재조회 후 다시 시도" 흐름).
+      return { conflict: true, conflictedBlockKeys, version: existing.version, mergedDocumentJson: serverDocumentJson };
+    }
+
+    const updateResult = await prisma.meetingMinutesDraft.updateMany({
+      where: { meetingType, version: existing.version },
+      data: { documentContent: JSON.stringify(merged), updatedBy: session.user.id, version: { increment: 1 } },
+    });
+
+    if (updateResult.count === 1) {
+      const updated = await prisma.meetingMinutesDraft.findUniqueOrThrow({ where: { meetingType } });
+      return { savedAt: updated.updatedAt.toISOString(), version: updated.version, mergedDocumentJson: JSON.stringify(merged) };
+    }
+
+    // version race — 우리가 읽은 뒤 다른 저장이 먼저 반영됐다. bounded
+    // retry(요청사항 11: "무한 retry 금지") — 다시 읽고 다시 병합해 같은
+    // Block conflict 여부를 재평가한다. attempt가 MAX_RETRIES를 넘으면
+    // loop를 빠져나가 아래 최종 conflict를 반환한다.
+  }
+  return { conflict: true };
 }
 
 /** 초기화 — 활성 Template을 다시 clone해 Draft Row를 덮어쓴다(요청사항:

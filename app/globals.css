@@ -210,6 +210,14 @@ body {
   padding-top: 0.3em;
   padding-bottom: 0.3em;
 }
+/* Step(담당자 View Filter + 안전한 Block 단위 저장) — 담당자 필터가 선택되면
+   TemplateRichTextEditor.tsx의 AssigneeFilterAttribute(ProseMirror
+   Decoration)가 필터 대상이 아닌 Task Block/goalName heading에 이 class만
+   붙인다 — documentContent 자체는 전혀 바뀌지 않고(요청사항 4), 순수 CSS로만
+   화면에서 숨긴다. */
+.am-filter-hidden {
+  display: none;
+}
 .tiptap-content th,
 .tiptap-content td {
   border: 1px solid var(--color-navy-100);

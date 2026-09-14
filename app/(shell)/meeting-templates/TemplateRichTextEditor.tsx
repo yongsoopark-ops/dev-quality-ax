@@ -3,8 +3,9 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { EditorContent, useEditor, useEditorState, type Editor, type JSONContent } from "@tiptap/react";
 import { Extension } from "@tiptap/core";
-import type { ResolvedPos } from "@tiptap/pm/model";
+import type { Node as PMNode, ResolvedPos } from "@tiptap/pm/model";
 import { Plugin, PluginKey, type Transaction } from "@tiptap/pm/state";
+import { Decoration, DecorationSet } from "@tiptap/pm/view";
 import StarterKit from "@tiptap/starter-kit";
 import Placeholder from "@tiptap/extension-placeholder";
 import { Color, FontSize, TextStyle } from "@tiptap/extension-text-style";
@@ -82,12 +83,21 @@ function createStickyAttributePlugin(pluginName: string, nodeTypeNames: string[]
  * node에 속성 하나만 얹는 방식이라 heading 자체의 동작(H1/H2/H3 등 기존
  * UX)은 전혀 바뀌지 않는다.
  */
-const MeetingSectionAttribute = Extension.create({
+/** Step(담당자별 작성 필터 + 서브 프로젝트 구조 통일) — meetingSection을
+ * heading뿐 아니라 AUTO Table(table, attrs.tableRole="auto")에도 붙인다.
+ * "이 Table이 어느 업무구분(REGULAR/SUB/COMMON/EXCEPTION)의 것인지"를 상위
+ * heading까지 거슬러 올라가 찾지 않고, Table 자기 자신의 attrs만으로 즉시
+ * 판별하기 위함이다(요청사항: "텍스트 parsing이 필요 없어야 한다"). 같은
+ * attribute 이름을 heading/table 두 타입에 재사용할 뿐 별도 개념이 아니다
+ * ("이 노드가 속한 회의록 섹션"이라는 의미는 두 타입 모두 동일). */
+const MEETING_SECTION_ATTRIBUTE_TYPES = ["heading", "table"];
+
+export const MeetingSectionAttribute = Extension.create({
   name: "meetingSectionAttribute",
   addGlobalAttributes() {
     return [
       {
-        types: ["heading"],
+        types: MEETING_SECTION_ATTRIBUTE_TYPES,
         attributes: {
           meetingSection: {
             default: null,
@@ -102,7 +112,268 @@ const MeetingSectionAttribute = Extension.create({
     ];
   },
   addProseMirrorPlugins() {
-    return [createStickyAttributePlugin("meetingSectionSticky", ["heading"], "meetingSection")];
+    return [createStickyAttributePlugin("meetingSectionSticky", MEETING_SECTION_ATTRIBUTE_TYPES, "meetingSection")];
+  },
+});
+
+/** JSON 배열 attribute 공용 정의(sourceTaskIds/assigneeUserIds가 같은
+ * data-* 직렬화 패턴을 공유한다 — parseHTML은 JSON.parse 실패 시 null). */
+function jsonArrayAttribute(dataAttrName: string) {
+  return {
+    default: null,
+    parseHTML: (element: HTMLElement) => {
+      const raw = element.getAttribute(dataAttrName);
+      if (!raw) return null;
+      try {
+        return JSON.parse(raw) as string[];
+      } catch {
+        return null;
+      }
+    },
+    renderHTML: (attributes: Record<string, unknown>) => {
+      const value = attributes[dataAttrName];
+      return Array.isArray(value) ? { [dataAttrName]: JSON.stringify(value) } : {};
+    },
+  };
+}
+
+/**
+ * Step(담당자별 작성 필터 + 서브 프로젝트 구조 통일, 이후 담당자 View
+ * Filter Step에서 sourceTaskIds/assigneeUserId 보완) — 향후 담당자 View
+ * Filter/Block 단위 저장을 위한 stable metadata 전부를 여기 모은다.
+ *
+ * - AUTO Table(그 Task Block의 시작을 알리는 anchor, tableRoleAttribute
+ *   참고): sourceTaskIds(항상, 이 Table에 나타나는 모든 Task.id 배열 —
+ *   요청사항 0의 1순위 식별자)/sourceTaskId(단수, Task 1건일 때만, 하위
+ *   호환용으로 유지)/assigneeUserIds(항상, 담당자 id 배열)/meetingSection.
+ * - 프로젝트/goalName 그룹 heading(H3): blockRole="PROJECT_GROUP" — "이
+ *   heading은 안건(H3)이 아니라 프로젝트/goalName 그룹 heading이다"를
+ *   텍스트 비교 없이 판별(요청사항 6).
+ * - "👤 이름" 담당자 구간 문단: assigneeUserId(단수, 그 구간이 특정
+ *   담당자면 id, "공통"/"미지정"이면 null) — 필터 option 목록을
+ *   documentContent에서 직접 뽑을 때(listAssigneeFilterOptions) 쓴다.
+ *
+ * 전부 같은 패턴(addGlobalAttributes + sticky 보존) — 값 자체는 전부
+ * lib/meetingMinutes/injectDocument.ts가 채워 넣는다.
+ */
+export const TaskBlockMetadataAttribute = Extension.create({
+  name: "taskBlockMetadataAttribute",
+  addGlobalAttributes() {
+    return [
+      {
+        types: ["table"],
+        attributes: {
+          sourceTaskIds: jsonArrayAttribute("data-source-task-ids"),
+          sourceTaskId: {
+            default: null,
+            parseHTML: (element: HTMLElement) => element.getAttribute("data-source-task-id"),
+            renderHTML: (attributes: Record<string, unknown>) => {
+              const value = attributes.sourceTaskId;
+              return value ? { "data-source-task-id": value } : {};
+            },
+          },
+          assigneeUserIds: jsonArrayAttribute("data-assignee-user-ids"),
+        },
+      },
+      {
+        // Step(Assignee Header Stable Metadata) — blockRole을 paragraph에도
+        // 부여한다: 담당자 header 문단("👤 이름")도 이제 "PROJECT_GROUP"
+        // heading과 같은 체계로 blockRole="ASSIGNEE_HEADER"를 갖는다(요청사항
+        // 1: "기존 blockRole attribute 체계를 재사용"). 값 자체는 heading과
+        // paragraph에서 서로 다른 의미(PROJECT_GROUP/ASSIGNEE_HEADER)로
+        // 쓰이지만 attribute 정의(data-block-role round-trip) 자체는 동일하다.
+        types: ["heading", "paragraph"],
+        attributes: {
+          blockRole: {
+            default: null,
+            parseHTML: (element: HTMLElement) => element.getAttribute("data-block-role"),
+            renderHTML: (attributes: Record<string, unknown>) => {
+              const value = attributes.blockRole;
+              return value ? { "data-block-role": value } : {};
+            },
+          },
+        },
+      },
+      {
+        types: ["paragraph"],
+        attributes: {
+          assigneeUserId: {
+            default: null,
+            parseHTML: (element: HTMLElement) => element.getAttribute("data-assignee-user-id"),
+            renderHTML: (attributes: Record<string, unknown>) => {
+              const value = attributes.assigneeUserId;
+              return value ? { "data-assignee-user-id": value } : {};
+            },
+          },
+        },
+      },
+    ];
+  },
+  addProseMirrorPlugins() {
+    return [
+      createStickyAttributePlugin("sourceTaskIdsSticky", ["table"], "sourceTaskIds"),
+      createStickyAttributePlugin("sourceTaskIdSticky", ["table"], "sourceTaskId"),
+      createStickyAttributePlugin("assigneeUserIdsSticky", ["table"], "assigneeUserIds"),
+      createStickyAttributePlugin("blockRoleSticky", ["heading", "paragraph"], "blockRole"),
+      createStickyAttributePlugin("assigneeUserIdSticky", ["paragraph"], "assigneeUserId"),
+    ];
+  },
+});
+
+/** 필터 대상 섹션(REGULAR_PROJECT/SUB_PROJECT/COMMON/EXCEPTION) — 출장은
+ * 제외(lib/meetingMinutes/injectDocument.ts의 FILTERABLE_MEETING_SECTIONS와
+ * 반드시 같은 값을 유지해야 한다. Client 번들에서 그 모듈을 직접 import하면
+ * "use server" 경계를 넘게 되므로, 여기서는 같은 5개 값을 그대로 복제해
+ * 둔다). */
+const FILTERABLE_SECTIONS_FOR_FILTER = new Set(["REGULAR_PROJECT", "SUB_PROJECT", "COMMON", "EXCEPTION"]);
+
+export const ASSIGNEE_FILTER_PLUGIN_KEY = new PluginKey<{ selectedUserId: string | null; decorations: DecorationSet }>("assigneeFilter");
+
+/**
+ * Step(복수 담당 Task Filter/Save 안전성 보완) — 필터 판정 1차 기준을
+ * "Task의 assigneeUserIds"에서 "이 Block이 물리적으로 어느 담당자 구역
+ * (👤 헤더) 아래에 있는가"로 바꿨다(요청사항 2). 복수 담당 Task는 담당자
+ * 마다 자기 구역에 occurrence가 하나씩 따로 존재하므로(build.ts "중복 표시"
+ * 정책, §1로 실제 fixture에서 재확인 — 두 occurrence 모두 sourceTaskIds/
+ * assigneeUserIds 값은 동일하고 오직 "어느 👤 구역 아래에 있는지"만 다르다),
+ * 한 사람의 구역 안에 있는 모든 내용은 이미 전부 그 사람 것이다 — 그래서
+ * "구역 전체를 한 번에 보이거나 숨긴다"만으로 §2~5 전부를 만족한다:
+ *   - 같은 Task가 두 구역에 있어도 선택 담당자 구역의 occurrence "딱 1번"만
+ *     보인다(다른 구역은 통째로 숨어서 자동으로 중복이 사라진다, 요청사항 C).
+ *   - 그 구역 안의 goalName heading은 항상 그 구역 소속 Task만 담고 있으므로
+ *     "matching Task 없으면 숨김"이 별도 로직 없이 자동 성립한다(요청사항 4).
+ *   - 비선택 담당자의 "👤" heading 자체도 구역의 일부라 함께 숨어(요청사항 D),
+ *     빈 문단만 남는 잔여 UI가 생기지 않는다(요청사항 3).
+ *
+ * 문서 최상위(top-level) 노드를 한 번 순회해:
+ *   1) heading(level!==3)을 만나면 "지금 어느 top-level 섹션인지"를 갱신한다.
+ *      필터 대상 4개(REGULAR/SUB/COMMON/EXCEPTION) 밖(회의 기본정보/회의
+ *      규칙/주요 안건/미결 업무/출장 등)이면 특정 담당자 필터가 걸린 동안
+ *      그 섹션 전체(다음 top-level heading 전까지)를 숨긴다(요청사항 5 —
+ *      Focus mode는 본인의 4개 업무영역 작성에만 집중한다). "전체" 선택
+ *      시에는 이 함수 자체가 호출 전에 걸러진다(아래 최상단 조기 반환).
+ *   2) 필터 대상 섹션 안에서는 "👤" 구간 표시 문단(attrs.assigneeUserId)을
+ *      만날 때마다 "지금 어느 담당자 구역인지"를 갱신하고, 그 구역의 모든
+ *      후속 노드(다음 top-level heading 또는 다음 "👤" 문단 전까지 — 그
+ *      경계는 다음 반복에서 자연히 갱신되므로 별도 종료 탐색이 필요 없다)를
+ *      "이 구역 담당자 === selectedUserId"인지로 표시 여부를 정한다.
+ *
+ * documentContent 자체는 전혀 바꾸지 않는다(Decoration만 계산 — 요청사항
+ * 4의 핵심 조건: "editor.getJSON()은 항상 전체 문서", "숨긴 node도
+ * document에는 그대로 존재", "DOM 사후 삭제 금지", "filtered JSON으로
+ * 교체 금지"). 필터가 null(전체)이면 즉시 DecorationSet.empty — 전체
+ * 문서가 원래 그대로 보인다.
+ */
+/** export는 오직 단위 테스트(assigneeFilterDecoration.test.ts) 전용이다 —
+ * 이 알고리즘 자체가 실제 라이브 Decoration 렌더링 경로에서 쓰이는 바로 그
+ * 함수라, DOM/jsdom 없이(이 프로젝트의 vitest는 environment: "node")
+ * @tiptap/core의 getSchema + Node.fromJSON으로 만든 실제 ProseMirror
+ * 문서에 대해 순수 로직만 검증한다. */
+/** Step(Assignee Header Stable Metadata) — "👤 이름 · N건" 구간 표시 문단의
+ * 판별 기준을 텍스트 접두사에서 명시적 attrs.blockRole="ASSIGNEE_HEADER"로
+ * 바꿨다(요청사항 1/2). 이 문자열은 injectDocument.ts의
+ * ASSIGNEE_HEADER_BLOCK_ROLE과 반드시 같은 값이어야 한다 — client 번들이
+ * "use server" 경계를 넘지 않도록(FILTERABLE_SECTIONS_FOR_FILTER와 같은 이유)
+ * 여기서는 그대로 복제해 둔다. */
+const ASSIGNEE_HEADER_BLOCK_ROLE = "ASSIGNEE_HEADER";
+/** legacy(이번 Step 이전) 문서 전용 fallback 판별에만 쓰는 텍스트 접두사 —
+ * 신규 경로(blockRole 있음)에서는 이 값을 전혀 참조하지 않는다. */
+const ASSIGNEE_HEADER_TEXT_PREFIX = "👤 ";
+
+/** 문서(top-level) 안에 이미 blockRole="ASSIGNEE_HEADER"가 심어진 담당자
+ * header가 하나라도 있는지 — injectDocument.ts의
+ * hasStableAssigneeHeaderMetadata와 동일한 판단 기준(담당자 header는 항상
+ * 통째로 재생성되므로 "일부만 legacy" 상태가 되지 않는다). 있으면(신규
+ * 구조로 이미 재구성된 문서) isAssigneeHeaderParagraph는 텍스트 fallback을
+ * 전혀 쓰지 않는다(요청사항 2/3). */
+function hasStableAssigneeHeaderMetadata(doc: PMNode): boolean {
+  let found = false;
+  doc.forEach((node) => {
+    if (!found && node.type.name === "paragraph" && node.attrs.blockRole === ASSIGNEE_HEADER_BLOCK_ROLE) found = true;
+  });
+  return found;
+}
+
+/** 담당자 header 판별 우선순위(요청사항 3, injectDocument.ts의
+ * isAssigneeHeaderParagraph와 동일한 기준):
+ *   1) attrs.blockRole === "ASSIGNEE_HEADER" — 신규 안정 경로, 텍스트와 무관.
+ *   2) legacyFallbackAllowed(문서 전체에 위 metadata가 전혀 없음)일 때만
+ *      "👤 " 텍스트 접두사로 legacy header를 인식한다.
+ * legacyFallbackAllowed가 false면 일반 문단의 텍스트가 우연히 "👤 "로
+ * 시작해도 절대 header로 오인하지 않는다(요청사항 C). */
+function isAssigneeHeaderParagraph(node: PMNode, legacyFallbackAllowed: boolean): boolean {
+  if (node.type.name !== "paragraph") return false;
+  if (node.attrs.blockRole === ASSIGNEE_HEADER_BLOCK_ROLE) return true;
+  if (!legacyFallbackAllowed) return false;
+  return node.textContent.startsWith(ASSIGNEE_HEADER_TEXT_PREFIX);
+}
+
+export function computeAssigneeFilterDecorations(doc: PMNode, selectedUserId: string | null): DecorationSet {
+  if (!selectedUserId) return DecorationSet.empty;
+
+  const decorations: Decoration[] = [];
+
+  function hide(node: PMNode, pos: number) {
+    decorations.push(Decoration.node(pos, pos + node.nodeSize, { class: "am-filter-hidden" }));
+  }
+
+  const legacyFallbackAllowed = !hasStableAssigneeHeaderMetadata(doc);
+
+  let sectionIsFilterable = false;
+  // null이면 "아직 이 섹션에서 어떤 담당자 구역에도 들어가지 않음"(공통/
+  // 미지정 구역 포함) — selectedUserId(실제 담당자 id)와 절대 같을 수 없어
+  // 안전하게 "숨김"으로 처리된다.
+  let currentAssigneeUserId: string | null = null;
+
+  doc.forEach((node, pos) => {
+    if (node.type.name === "heading" && node.attrs.level !== 3) {
+      const section = typeof node.attrs.meetingSection === "string" ? node.attrs.meetingSection : null;
+      sectionIsFilterable = !!section && FILTERABLE_SECTIONS_FOR_FILTER.has(section);
+      currentAssigneeUserId = null;
+      if (!sectionIsFilterable) hide(node, pos); // 요청사항 5: Focus mode에서 공용영역 heading 자체도 숨김
+      return;
+    }
+
+    if (!sectionIsFilterable) {
+      hide(node, pos); // 요청사항 5: 그 섹션에 속한 모든 내용
+      return;
+    }
+
+    if (isAssigneeHeaderParagraph(node, legacyFallbackAllowed)) {
+      currentAssigneeUserId = typeof node.attrs.assigneeUserId === "string" ? node.attrs.assigneeUserId : null;
+    }
+
+    if (currentAssigneeUserId !== selectedUserId) hide(node, pos);
+  });
+
+  return DecorationSet.create(doc, decorations);
+}
+
+const AssigneeFilterAttribute = Extension.create({
+  name: "assigneeFilterAttribute",
+  addProseMirrorPlugins() {
+    return [
+      new Plugin({
+        key: ASSIGNEE_FILTER_PLUGIN_KEY,
+        state: {
+          init: (_, state): { selectedUserId: string | null; decorations: DecorationSet } => ({
+            selectedUserId: null,
+            decorations: computeAssigneeFilterDecorations(state.doc, null),
+          }),
+          apply(tr, prev, _oldState, newState) {
+            const meta = tr.getMeta(ASSIGNEE_FILTER_PLUGIN_KEY) as string | null | undefined;
+            const selectedUserId = meta !== undefined ? meta : prev.selectedUserId;
+            if (meta === undefined && !tr.docChanged) return prev;
+            return { selectedUserId, decorations: computeAssigneeFilterDecorations(newState.doc, selectedUserId) };
+          },
+        },
+        props: {
+          decorations(state) {
+            return ASSIGNEE_FILTER_PLUGIN_KEY.getState(state)?.decorations ?? null;
+          },
+        },
+      }),
+    ];
   },
 });
 
@@ -194,7 +465,7 @@ const FieldKeyAttribute = Extension.create({
  * meetingSection과 같은 패턴으로 table 노드 자체에 "사용자에게 보이지
  * 않는 내부 attribute"(tableRole)를 붙여, CSS가 구조 추론이 아니라 이
  * attribute만 보고 확실하게 표를 식별하게 한다. */
-const TableRoleAttribute = Extension.create({
+export const TableRoleAttribute = Extension.create({
   name: "tableRoleAttribute",
   addGlobalAttributes() {
     return [
@@ -849,6 +1120,7 @@ export function TemplateRichTextEditor({
   value,
   onChange,
   enableManualAgenda = false,
+  assigneeFilterUserId = null,
 }: {
   value: JSONContent;
   onChange: (content: JSONContent) => void;
@@ -860,6 +1132,12 @@ export function TemplateRichTextEditor({
    * 명시적으로 true를 넘긴다. 컴포넌트를 복제하지 않고 이 prop 하나로
    * 갈린다(요청사항). */
   enableManualAgenda?: boolean;
+  /** Step(담당자 View Filter + 안전한 Block 단위 저장) — 선택된 담당자
+   * User.id, null이면 "전체"(필터 없음). documentContent 자체는 절대 바꾸지
+   * 않고 Decoration으로만 화면 표시를 바꾼다(AssigneeFilterAttribute 참고).
+   * enableManualAgenda와 같은 이유로 기본값 null — Template 편집 화면은 이
+   * prop을 아예 넘기지 않아 필터 개념 자체가 없다. */
+  assigneeFilterUserId?: string | null;
 }) {
   const extensions = useMemo(
     () => [
@@ -895,6 +1173,8 @@ export function TemplateRichTextEditor({
       TableRoleAttribute,
       PendingAgendaIdAttribute,
       AgendaOriginAttribute,
+      TaskBlockMetadataAttribute,
+      AssigneeFilterAttribute,
     ],
     [],
   );
@@ -912,6 +1192,18 @@ export function TemplateRichTextEditor({
       attributes: { class: "tiptap-content tiptap-content--meeting-minutes min-h-[420px] px-2 py-4 text-sm focus:outline-none" },
     },
   });
+
+  // Step(담당자 View Filter + 안전한 Block 단위 저장) — 필터 선택이 바뀔
+  // 때마다 빈 meta transaction 하나만 dispatch한다(문서는 전혀 안 바뀐다,
+  // tr.docChanged=false) — AssigneeFilterAttribute의 plugin state가 이
+  // meta를 읽어 Decoration만 다시 계산한다. editor.getJSON()에는 이 필터
+  // 상태가 전혀 반영되지 않는다(요청사항 4/13: filter는 React state로만
+  // 관리하고 documentContent/DB에는 저장하지 않는다).
+  useEffect(() => {
+    if (!editor) return;
+    editor.view.dispatch(editor.state.tr.setMeta(ASSIGNEE_FILTER_PLUGIN_KEY, assigneeFilterUserId));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editor, assigneeFilterUserId]);
 
   if (!editor) return null;
 

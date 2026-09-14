@@ -58,6 +58,13 @@ export interface WeeklyTaskInfo {
   projectName: string | null;
   goalName: string | null;
   assigneeNames: string[];
+  /** Step(담당자별 작성 필터 + 서브 프로젝트 구조 통일) — 표시용 이름
+   * (assigneeNames)과 별개로 실제 User.id를 함께 들고 다닌다. 향후 담당자
+   * View Filter/부분 저장이 이름 문자열 비교("박용수 업무"라고 추정)가 아니라
+   * 안정적인 id 비교(assigneeUserIds.includes(selectedUserId))로 동작하기
+   * 위한 근거 값이다 — 이번 Step에서는 documentContent에 attrs로 심어두기만
+   * 하고 필터 자체는 구현하지 않는다. */
+  assigneeUserIds: string[];
   /** Step(V1 Fix — 회의록 공통 일정 그룹 분리) — Schedule의 "공통"
    * assigneeMode로 등록된 Task는 항상 assigneeNames가 비어 있지만(담당자
    * 미지정과 겉보기 동일), 의미는 다르다("특정 담당자 없이 공통 업무로
@@ -71,6 +78,11 @@ export interface WeeklyTaskInfo {
 }
 
 export interface SectionTaskRow {
+  /** Step(담당자별 작성 필터 + 서브 프로젝트 구조 통일) — 이 행이 어느 Task에서
+   * 왔는지 식별하는 stable id(Task.id 그대로). injectDocument.ts가 이 값을
+   * AUTO Table 노드의 attrs.sourceTaskId로 심어, "재클릭 시 어느 기존 Task
+   * Block인지"를 텍스트 파싱 없이 판별하는 데 쓴다(요청사항 9). */
+  taskId: string;
   title: string;
   /** "yyyy.MM.dd ~ yyyy.MM.dd" 형태(요청사항 예시: "2026.09.02 ~
    * 2026.09.04") — Schedule 다른 화면의 하이픈 표기와는 별개로, 이 Table
@@ -81,6 +93,9 @@ export interface SectionTaskRow {
    * 표시되더라도 이 값은 항상 전체 목록 그대로다(그룹 소속이 목록을 자르지
    * 않는다). */
   assignees: string[];
+  /** assignees와 같은 순서의 실제 User.id 목록(표시는 여전히 이름으로 한다
+   * — assignees 필드가 그 역할을 그대로 유지). */
+  assigneeUserIds: string[];
 }
 
 export interface SectionGroup {
@@ -101,6 +116,11 @@ export interface SectionGroup {
  * isCommon이 true면 assigneeName은 항상 null이다. */
 export interface AssigneeGroup {
   assigneeName: string | null;
+  /** Step(담당자 View Filter + 안전한 Block 단위 저장) — 그룹핑 자체가 이제
+   * 이름이 아니라 이 값(User.id) 기준이다(아래 buildWeeklySections 참고,
+   * 동명이인이 있어도 서로 다른 그룹으로 정확히 분리된다). assigneeName은
+   * 표시(label)용으로만 남긴다. isCommon이 true면 항상 null. */
+  assigneeUserId: string | null;
   isCommon: boolean;
   groups: SectionGroup[];
 }
@@ -118,28 +138,46 @@ export interface SectionResult {
    * 정렬 순서(assigneeSortKeys 기준) → "담당자 미지정"은 항상 맨 뒤
    * (Step(V1 Fix — 회의록 공통 일정 그룹 분리) 요청사항 5/6). */
   assigneeGroups: AssigneeGroup[];
+  /** Step(담당자별 작성 필터 + 서브 프로젝트 구조 통일) — 이 섹션의 그룹 하나
+   * (SectionGroup)를 documentContent block으로 만들 때, tasks 전체가 작성
+   * Table 1개를 공유(SHARED, 기존 REGULAR/EXCEPTION/BUSINESS_TRIP/COMMON
+   * 그대로)할지, Task마다 독립 작성 Table을 가질지(PER_TASK, 이번 Step에서
+   * SUB_PROJECT만 신규 적용) 결정한다. groupKey(goalName 기준 그룹핑)는
+   * SUB_PROJECT도 그대로 유지한다 — PER_TASK는 "그룹을 나누는 기준"이 아니라
+   * "그룹 안의 내용을 어떻게 펼치는지"만 바꾼다(요청사항: "goalName은 상위
+   * 시각적 그룹으로 유지"). */
+  taskLayout: "SHARED" | "PER_TASK";
+  /** Step(담당자별 작성 필터 + 서브 프로젝트 구조 통일) — sourceTaskId/
+   * assigneeUserIds/blockRole 등 신규 attrs를 이 섹션에 stamping할지 여부.
+   * BUSINESS_TRIP은 이번 담당자 필터 대상이 아니므로(요청사항 7) false —
+   * 기존 구조/attrs를 그대로 둔다. */
+  attachMetadata: boolean;
 }
 
 interface SectionDef {
   headingText: string;
   section: NonNullable<WeeklyTaskInfo["meetingReportSection"]>;
   groupKey: (task: WeeklyTaskInfo) => string;
+  taskLayout: "SHARED" | "PER_TASK";
+  attachMetadata: boolean;
 }
 
 const SECTION_DEFS: SectionDef[] = [
-  { headingText: "정규 프로젝트", section: "REGULAR_PROJECT", groupKey: (t) => t.projectName?.trim() || t.title },
-  { headingText: "서브 프로젝트", section: "SUB_PROJECT", groupKey: (t) => t.goalName?.trim() || t.title },
-  { headingText: "예외 업무", section: "EXCEPTION", groupKey: (t) => t.title },
-  { headingText: "출장 업무", section: "BUSINESS_TRIP", groupKey: (t) => t.title },
-  { headingText: "공통 업무", section: "COMMON", groupKey: (t) => t.title },
+  { headingText: "정규 프로젝트", section: "REGULAR_PROJECT", groupKey: (t) => t.projectName?.trim() || t.title, taskLayout: "SHARED", attachMetadata: true },
+  { headingText: "서브 프로젝트", section: "SUB_PROJECT", groupKey: (t) => t.goalName?.trim() || t.title, taskLayout: "PER_TASK", attachMetadata: true },
+  { headingText: "예외 업무", section: "EXCEPTION", groupKey: (t) => t.title, taskLayout: "SHARED", attachMetadata: true },
+  { headingText: "출장 업무", section: "BUSINESS_TRIP", groupKey: (t) => t.title, taskLayout: "SHARED", attachMetadata: false },
+  { headingText: "공통 업무", section: "COMMON", groupKey: (t) => t.title, taskLayout: "SHARED", attachMetadata: true },
 ];
 
 function formatTaskPeriod(start: Date, due: Date): string {
   return `${format(start, "yyyy.MM.dd")} ~ ${format(due, "yyyy.MM.dd")}`;
 }
 
-/** null(담당자 미지정)을 포함해 안정적으로 정렬한다 — assigneeSortKeys에
- * 없는 이름(이론상 없어야 하지만 방어적으로)은 정렬 순서상 맨 뒤로 민다. */
+/** null(담당자 미지정)을 포함해 안정적으로 정렬한다 — keys/assigneeSortKeys는
+ * Step(담당자 View Filter + 안전한 Block 단위 저장)부터 이름이 아니라
+ * User.id다(동명이인 안전). assigneeSortKeys에 없는 id(이론상 없어야
+ * 하지만 방어적으로)는 정렬 순서상 맨 뒤로 민다. */
 function sortAssigneeKeys(keys: (string | null)[], assigneeSortKeys: Map<string, number>): (string | null)[] {
   const withoutUnassigned = keys.filter((k): k is string => k !== null);
   withoutUnassigned.sort((a, b) => {
@@ -190,18 +228,25 @@ export function buildWeeklySections(tasks: WeeklyTaskInfo[], assigneeSortKeys: M
     const commonBucket: TaskBucket = { groupOrder: [], groupsByKey: new Map() };
     let hasCommon = false;
 
-    // 담당자별 버킷 — 담당자가 여러 명인 Task는 각 담당자의 버킷에 모두
-    // 들어간다(중복 표시 — 위 파일 상단 주석 참고). 담당자가 없고 공통도
-    // 아닌 Task만 null(담당자 미지정) 버킷으로 간다.
+    // 담당자별 버킷 — Step(담당자 View Filter + 안전한 Block 단위 저장)부터
+    // 그룹핑 key가 이름이 아니라 User.id다(동명이인 안전, 요청사항 14).
+    // 담당자가 여러 명인 Task는 각 담당자의 버킷에 모두 들어간다(중복 표시
+    // — 위 파일 상단 주석 참고). 담당자가 없고 공통도 아닌 Task만 null
+    // (담당자 미지정) 버킷으로 간다.
     const bucketOrder: (string | null)[] = [];
     const buckets = new Map<string | null, TaskBucket>();
+    // id로 그룹핑해도 화면 표시는 여전히 이름이 필요하다 — 처음 만난 이름을
+    // 그대로 쓴다(assigneeSortKeys가 name이 아니라 id 기준인 것과 같은 이유).
+    const namesById = new Map<string, string>();
 
     for (const task of matched) {
       const projectKey = def.groupKey(task);
       const taskRow: SectionTaskRow = {
+        taskId: task.id,
         title: task.title,
         period: formatTaskPeriod(task.startDate, task.dueDate),
         assignees: task.assigneeNames,
+        assigneeUserIds: task.assigneeUserIds,
       };
 
       if (task.isCommonAssignee) {
@@ -210,7 +255,10 @@ export function buildWeeklySections(tasks: WeeklyTaskInfo[], assigneeSortKeys: M
         continue;
       }
 
-      const assigneeKeys: (string | null)[] = task.assigneeNames.length > 0 ? task.assigneeNames : [null];
+      const assigneeKeys: (string | null)[] = task.assigneeUserIds.length > 0 ? task.assigneeUserIds : [null];
+      task.assigneeUserIds.forEach((id, i) => {
+        if (!namesById.has(id)) namesById.set(id, task.assigneeNames[i] ?? id);
+      });
       for (const assigneeKey of assigneeKeys) {
         let bucket = buckets.get(assigneeKey);
         if (!bucket) {
@@ -226,14 +274,21 @@ export function buildWeeklySections(tasks: WeeklyTaskInfo[], assigneeSortKeys: M
     const assigneeGroups: AssigneeGroup[] = [
       // "공통"은 있으면 항상 맨 앞이다(요청사항 5) — 담당자 정렬/미배정
       // 순서와 완전히 무관한 별도 규칙.
-      ...(hasCommon ? [{ assigneeName: null, isCommon: true, groups: bucketToGroups(commonBucket) }] : []),
-      ...orderedAssigneeKeys.map((assigneeName) => ({
-        assigneeName,
+      ...(hasCommon ? [{ assigneeName: null, assigneeUserId: null, isCommon: true, groups: bucketToGroups(commonBucket) }] : []),
+      ...orderedAssigneeKeys.map((assigneeUserId) => ({
+        assigneeName: assigneeUserId ? (namesById.get(assigneeUserId) ?? assigneeUserId) : null,
+        assigneeUserId,
         isCommon: false,
-        groups: bucketToGroups(buckets.get(assigneeName)!),
+        groups: bucketToGroups(buckets.get(assigneeUserId)!),
       })),
     ];
 
-    return { headingText: def.headingText, section: def.section, assigneeGroups };
+    return {
+      headingText: def.headingText,
+      section: def.section,
+      assigneeGroups,
+      taskLayout: def.taskLayout,
+      attachMetadata: def.attachMetadata,
+    };
   });
 }

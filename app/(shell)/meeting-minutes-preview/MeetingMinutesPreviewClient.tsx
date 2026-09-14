@@ -1,11 +1,18 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { JSONContent } from "@tiptap/react";
 import { TemplateRichTextEditor } from "../meeting-templates/TemplateRichTextEditor";
 import { MEETING_TEMPLATE_TYPE_LABELS } from "@/lib/meetingTemplates/constants";
 import { normalizeHeadingText } from "@/lib/meetingMinutes/sectionHeadings";
-import { resetMeetingMinutesDraftAction, saveMeetingMinutesDraftAction, type MeetingMinutesDraft } from "@/lib/meetingMinutes/draft";
+import { hasUnmigratedAssigneeHeaderText, listAssigneeFilterOptions } from "@/lib/meetingMinutes/injectDocument";
+import {
+  getMeetingMinutesDraftAction,
+  resetMeetingMinutesDraftAction,
+  saveMeetingMinutesDraftAction,
+  saveMeetingMinutesDraftFilteredAction,
+  type MeetingMinutesDraft,
+} from "@/lib/meetingMinutes/draft";
 import { loadPendingAgendaIntoDraftAction, loadWeeklyScheduleIntoDraftAction, type WeeklyScheduleLoadResult } from "@/lib/meetingMinutes/actions";
 
 /** 자동저장 debounce 간격 — 편집 중 매 키 입력마다 저장 요청을 보내지 않게
@@ -111,6 +118,22 @@ export function MeetingMinutesPreviewClient({
   // (다른 사용자가 그 사이 먼저 저장/초기화함)을 "error"(네트워크/서버 오류)
   // 와 구분해 보여준다 — 사용자가 원인을 오해하지 않도록.
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved" | "error" | "conflict">("idle");
+  // Step(담당자 View Filter + 안전한 Block 단위 저장) — 선택된 담당자
+  // User.id, null이면 "전체"(요청사항 13: React state로만 관리, documentContent/
+  // DB에는 저장하지 않는다 — 페이지 재진입 시 기본값은 항상 "전체"다).
+  const [assigneeFilter, setAssigneeFilter] = useState<string | null>(null);
+  const [switchingFilter, setSwitchingFilter] = useState(false);
+  // Step(담당자 View Filter + 안전한 Block 단위 저장) — 요청사항 6: conflict가
+  // 나면(전체 모드든 필터 모드든) autosave를 완전히 멈추고, 사용자가 명시적으로
+  // 최신본을 불러오기 전까지 재저장을 막는다("versionRef만 갱신하고 조용히
+  // 다음 저장을 통과시키던" 기존 동작을 폐기).
+  const [saveBlocked, setSaveBlocked] = useState(false);
+  // Step(담당자 View Filter + 안전한 Block 단위 저장) — "이 편집 세션을 시작한
+  // (또는 마지막으로 성공 저장한) 시점의 서버 전체 문서". 필터 저장
+  // (saveMeetingMinutesDraftFilteredAction)이 "그 사이 다른 사람이 같은
+  // Block을 먼저 바꿨는지" 판정하는 기준값이다(lib/meetingMinutes/filteredSave.ts
+  // 참고) — documentContent(지금 화면의 편집 중인 문서)와는 별개로 관리한다.
+  const baseDocumentRef = useRef<JSONContent | null>(draft?.document ?? null);
   // Step(Draft/Template 버전 비교 + 양식 변경 안내) — draft prop 자체는
   // 초기화해도 바뀌지 않는다(handleReset은 documentContent만 로컬로 바꾼다,
   // 아래 참고) — 그래서 배너 표시 여부는 draft.templateOutdated를 그대로
@@ -155,12 +178,104 @@ export function MeetingMinutesPreviewClient({
   if (draft !== prevDraft) {
     setPrevDraft(draft);
     setDocumentContent(draft?.document ?? null);
+    baseDocumentRef.current = draft?.document ?? null;
     setWeeklyInfo(null);
     setLoadFeedback(null);
     setLoadError(null);
     setDownloadError(null);
     setSaveStatus("idle");
+    setSaveBlocked(false);
+    setAssigneeFilter(null); // 요청사항 13: 회의 유형 전환 등 재진입 시 항상 "전체"로 복귀
     setTemplateOutdated(draft?.templateOutdated ?? false);
+  }
+
+  // Step(담당자 View Filter + 안전한 Block 단위 저장) — 필터 select의 option
+  // 목록을 실제 지금 화면에 로드된 documentContent에서 직접 뽑는다(요청사항
+  // 1/14: 하드코딩 금지, "실제 회의록에 포함된 담당자"). 별도 서버 조회 없이
+  // 이미 있는 문서를 훑기만 하므로 순수 계산이다.
+  const assigneeOptions = useMemo(() => (documentContent ? listAssigneeFilterOptions(documentContent) : []), [documentContent]);
+  // Step(Final Local Fixture UI Validation) — assigneeOptions가 비어 select가
+  // disabled될 때, 그 이유가 "이 문서에 담당자 구간 자체가 없다"(새로 만든
+  // 빈 문서)가 아니라 "예전 방식이라 필터가 안 되는 것"임을 사용자에게
+  // 알려준다(요청사항 1). 문서를 변환/수정하지 않는다 — 순수 안내 문구뿐.
+  const showLegacyFilterNotice = useMemo(
+    () => assigneeOptions.length === 0 && !!documentContent && hasUnmigratedAssigneeHeaderText(documentContent),
+    [assigneeOptions, documentContent],
+  );
+
+  /**
+   * Step(담당자 View Filter + 안전한 Block 단위 저장) — 실제 저장 1회 시도를
+   * 공용으로 담당한다(자동저장 debounce 콜백과, 필터 전환 시의 즉시 flush
+   * 양쪽에서 재사용한다).
+   *
+   * assigneeFilter===null(전체 모드)이면 기존 saveMeetingMinutesDraftAction
+   * (전체 overwrite, optimistic version 검사)을 그대로 쓴다 — 다만 conflict
+   * 처리 정책이 바뀌었다(요청사항 6): 예전처럼 "version만 조용히 받아들이고
+   * 계속 입력하면 다음 자동저장이 통과되게" 두지 않는다. conflict가 나면
+   * saveBlocked를 켜 autosave 자체를 완전히 멈추고, 사용자가 명시적으로
+   * 최신본을 불러오기 전까지(syncWithServerLatest) 두 번 다시 저장을
+   * 시도하지 않는다 — "다른 사용자의 최신 변경을 조용히 덮어쓰는" 경로를
+   * 원천 차단한다.
+   *
+   * assigneeFilter!==null(필터 모드)이면 saveMeetingMinutesDraftFilteredAction
+   * (요청사항 7~11 — 선택 담당자의 Block만 서버 최신 문서 위에 병합)을 쓴다.
+   * baseDocumentRef(이 필터 편집을 시작한 시점의 서버 문서)를 기준으로
+   * 넘긴다 — 성공하면 서버가 돌려준 병합 결과로 baseDocumentRef를 다시
+   * 맞춰(다음 저장의 새 기준점) 그 사이 반영된 "다른 사람의 변경"까지 함께
+   * 반영한다.
+   *
+   * 반환값(boolean)은 "이 저장이 실제로 반영됐는지" — 필터 전환 flush에서
+   * 이 값으로 전환을 계속할지 막을지 판단한다.
+   */
+  async function performSave(next: JSONContent): Promise<boolean> {
+    if (!draft) return true;
+    setSaveStatus("saving");
+    try {
+      if (assigneeFilter === null) {
+        const res = await saveMeetingMinutesDraftAction(draft.meetingType, JSON.stringify(next), versionRef.current);
+        if (res.conflict) {
+          if (typeof res.version === "number") versionRef.current = res.version;
+          setSaveBlocked(true);
+          setSaveStatus("conflict");
+          return false;
+        }
+        if (res.error) {
+          setSaveStatus("error");
+          return false;
+        }
+        if (typeof res.version === "number") versionRef.current = res.version;
+        baseDocumentRef.current = next;
+        setSaveStatus("saved");
+        return true;
+      }
+
+      const res = await saveMeetingMinutesDraftFilteredAction(
+        draft.meetingType,
+        JSON.stringify(baseDocumentRef.current ?? next),
+        JSON.stringify(next),
+        assigneeFilter,
+      );
+      if (res.conflict) {
+        // 같은 Block을 다른 사용자가 그 사이 먼저 저장했다 — 이번 저장은
+        // 전혀 반영되지 않았다(서버가 그대로 알려준 최신 문서로 base만
+        // 맞춰 둔다, 요청사항 10: "SAME_BLOCK_CONFLICT → 저장하지 않음").
+        if (res.mergedDocumentJson) baseDocumentRef.current = JSON.parse(res.mergedDocumentJson) as JSONContent;
+        setSaveBlocked(true);
+        setSaveStatus("conflict");
+        return false;
+      }
+      if (res.error) {
+        setSaveStatus("error");
+        return false;
+      }
+      if (typeof res.version === "number") versionRef.current = res.version;
+      if (res.mergedDocumentJson) baseDocumentRef.current = JSON.parse(res.mergedDocumentJson) as JSONContent;
+      setSaveStatus("saved");
+      return true;
+    } catch {
+      setSaveStatus("error");
+      return false;
+    }
   }
 
   /** Step(회의록 Draft 저장/초기화 정책) — Tiptap Editor의 onChange가 호출될
@@ -169,36 +284,73 @@ export function MeetingMinutesPreviewClient({
    * handleReset)는 이 함수를 거치지 않고 setDocumentContent를 직접 호출한다
    * — 그 값들은 그 즉시 이미 서버가 만든 최신 상태이므로 다시 저장할
    * 필요가 없을뿐더러, 저장 여부를 "편집 이벤트 발생 여부"로만 판단해야
-   * 화면 state와 자동저장 트리거가 절대 엇갈리지 않는다. */
+   * 화면 state와 자동저장 트리거가 절대 엇갈리지 않는다.
+   *
+   * Step(담당자 View Filter + 안전한 Block 단위 저장) — saveBlocked(conflict
+   * 이후 재저장 금지 상태)이면 아예 저장을 예약하지 않는다 — 화면에 입력된
+   * 내용은 그대로 유지하되(요청사항: 로컬 편집 내용을 잃지 않는다), 사용자가
+   * "최신 내용 불러오기"로 명시적으로 재동기화하기 전까지 서버 전송 자체를
+   * 하지 않는다. */
   function handleEditorChange(next: JSONContent) {
     setDocumentContent(next);
-    if (!draft) return;
-    const meetingType = draft.meetingType;
+    if (!draft || saveBlocked) return;
     if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
-    saveTimeoutRef.current = setTimeout(async () => {
-      setSaveStatus("saving");
-      try {
-        const res = await saveMeetingMinutesDraftAction(meetingType, JSON.stringify(next), versionRef.current);
-        // 저장 실패해도 화면에 이미 입력된 내용(documentContent)은 절대
-        // 건드리지 않는다(요청사항) — 상태 문구만 바꾼다.
-        if (res.conflict) {
-          // 다른 사용자(또는 이 화면의 초기화)가 그 사이 먼저 저장해 버전이
-          // 앞서갔다 — 지금 이 편집 내용을 조용히 덮어쓰지 않고 알린다.
-          // 서버가 알려준 최신 version은 받아들여서(다음 자동저장부터는
-          // 정상 반영되도록) 계속 막히지 않게 한다 — 실시간 병합은 하지
-          // 않지만(요청사항 범위 밖), 사용자가 다시 저장을 시도하면 통과한다.
-          if (typeof res.version === "number") versionRef.current = res.version;
-          setSaveStatus("conflict");
-        } else if (res.error) {
-          setSaveStatus("error");
-        } else {
-          if (typeof res.version === "number") versionRef.current = res.version;
-          setSaveStatus("saved");
-        }
-      } catch {
-        setSaveStatus("error");
-      }
+    saveTimeoutRef.current = setTimeout(() => {
+      saveTimeoutRef.current = null;
+      void performSave(next);
     }, AUTOSAVE_DEBOUNCE_MS);
+  }
+
+  /** Step(담당자 View Filter + 안전한 Block 단위 저장) — 서버 최신 Draft를
+   * 다시 받아 documentContent/baseDocumentRef/version을 전부 그 값으로
+   * 맞추고 Editor를 강제로 다시 마운트한다(reloadNonce). conflict 배너의
+   * "최신 내용 불러오기" 버튼과, 필터 전환 로직(§12) 양쪽에서 재사용한다. */
+  async function syncWithServerLatest() {
+    if (!draft) return;
+    const res = await getMeetingMinutesDraftAction(draft.meetingType);
+    if (res.draft?.document) {
+      setDocumentContent(res.draft.document);
+      baseDocumentRef.current = res.draft.document;
+      versionRef.current = res.draft.version;
+      setReloadNonce((n) => n + 1);
+    }
+    setSaveBlocked(false);
+    setSaveStatus("idle");
+  }
+
+  /**
+   * Step(담당자 View Filter + 안전한 Block 단위 저장) — 요청사항 12: 필터를
+   * 바꾸기 전에 (1) 대기 중인 자동저장을 즉시 flush하고 성공을 확인한 뒤,
+   * (2) 서버 최신 Draft를 다시 받아 전체 문서를 그 값으로 동기화하고,
+   * (3) 그 다음에만 새 필터를 적용한다. flush가 실패(conflict/error)하면
+   * 전환 자체를 막는다 — "unsaved local change가 있는데 강제로 fetch해서
+   * 버리는 동작 금지"이기 때문이다(사용자는 saveBlocked 배너를 보고 먼저
+   * 해결해야 한다).
+   */
+  async function handleAssigneeFilterChange(nextFilter: string | null) {
+    if (nextFilter === assigneeFilter || !draft) {
+      setAssigneeFilter(nextFilter);
+      return;
+    }
+
+    if (saveBlocked) return; // 이미 conflict 상태 — 먼저 "최신 내용 불러오기"로 해결해야 한다.
+
+    if (saveTimeoutRef.current) {
+      clearTimeout(saveTimeoutRef.current);
+      saveTimeoutRef.current = null;
+      if (documentContent) {
+        const ok = await performSave(documentContent);
+        if (!ok) return; // 저장 실패/충돌 — 필터 전환을 막는다(로컬 편집 유실 방지).
+      }
+    }
+
+    setSwitchingFilter(true);
+    try {
+      await syncWithServerLatest();
+      setAssigneeFilter(nextFilter);
+    } finally {
+      setSwitchingFilter(false);
+    }
   }
 
   /** 초기화 — confirmation 1회 후 활성 Template 골격만 다시 clone한다
@@ -223,9 +375,11 @@ export function MeetingMinutesPreviewClient({
       // "Schedule AUTO 데이터도 초기화됨") — Template 골격에는 애초에
       // Schedule 자동입력 값이 없으므로 weeklyInfo를 비우는 것만으로 충분하다.
       setDocumentContent(res.draft.document);
+      baseDocumentRef.current = res.draft.document;
       setWeeklyInfo(null);
       setLoadFeedback(null);
       setSaveStatus("idle");
+      setSaveBlocked(false);
       setTemplateOutdated(false); // 방금 최신 Template을 clone했으므로
       versionRef.current = res.draft.version; // 서버가 방금 올린 version을 기준으로 맞춘다
       setReloadNonce((n) => n + 1);
@@ -282,12 +436,17 @@ export function MeetingMinutesPreviewClient({
         try {
           const saveRes = await saveMeetingMinutesDraftAction(draft.meetingType, JSON.stringify(merged), versionRef.current);
           if (saveRes.conflict) {
+            // 요청사항 6과 동일한 정책 — 조용히 버전만 받아들이고 다음
+            // 자동저장이 통과되게 두지 않는다. 이 클릭 자체가 명시적
+            // 저장이었으므로, 여기서도 재저장은 사용자가 최신화한 뒤에만.
             if (typeof saveRes.version === "number") versionRef.current = saveRes.version;
+            setSaveBlocked(true);
             setSaveStatus("conflict");
           } else if (saveRes.error) {
             setSaveStatus("error");
           } else {
             if (typeof saveRes.version === "number") versionRef.current = saveRes.version;
+            baseDocumentRef.current = merged;
             setSaveStatus("saved");
           }
         } catch {
@@ -331,11 +490,13 @@ export function MeetingMinutesPreviewClient({
           const saveRes = await saveMeetingMinutesDraftAction(draft.meetingType, JSON.stringify(merged), versionRef.current);
           if (saveRes.conflict) {
             if (typeof saveRes.version === "number") versionRef.current = saveRes.version;
+            setSaveBlocked(true);
             setSaveStatus("conflict");
           } else if (saveRes.error) {
             setSaveStatus("error");
           } else {
             if (typeof saveRes.version === "number") versionRef.current = saveRes.version;
+            baseDocumentRef.current = merged;
             setSaveStatus("saved");
           }
         } catch {
@@ -514,6 +675,35 @@ export function MeetingMinutesPreviewClient({
           {saveStatus === "conflict" && <span className="text-amber-700">다른 사용자가 방금 저장함</span>}
         </span>
 
+        {/* Step(담당자 View Filter + 안전한 Block 단위 저장) — 담당자별
+            작성 필터(요청사항 1). value=userId, label=표시 이름 — 이름
+            문자열을 key로 쓰지 않는다. option 목록은 documentContent에서
+            직접 뽑은 assigneeOptions뿐(하드코딩 없음). 전환 시 flush→재조회
+            (handleAssigneeFilterChange, 요청사항 12) 동안은 select를
+            잠근다. */}
+        <label className="flex items-center gap-1.5 text-xs text-navy-950/70">
+          담당자
+          <select
+            value={assigneeFilter ?? "ALL"}
+            onChange={(e) => void handleAssigneeFilterChange(e.target.value === "ALL" ? null : e.target.value)}
+            disabled={switchingFilter || saveBlocked || assigneeOptions.length === 0}
+            className="rounded-md border border-navy-200 bg-white px-2 py-1 text-xs disabled:opacity-50"
+          >
+            <option value="ALL">전체</option>
+            {assigneeOptions.map((opt) => (
+              <option key={opt.id} value={opt.id}>
+                {opt.name}
+              </option>
+            ))}
+          </select>
+          {switchingFilter && <span className="text-navy-950/40">전환 중...</span>}
+        </label>
+        {showLegacyFilterNotice && (
+          <span className="text-[11px] text-navy-950/50">
+            기존 회의록은 담당자 정보가 없어 필터를 사용할 수 없습니다. 다음 일정 불러오기/초기화 이후부터 사용할 수 있습니다.
+          </span>
+        )}
+
         <OverflowMenu>
           {/* Step(Schedule/Meeting Minutes V1.1 사용성 개선 — 미결 안건
               이월) — 지난 회차 초기화 직전에 자동 캡처된 미결 안건을
@@ -543,10 +733,29 @@ export function MeetingMinutesPreviewClient({
         {loadError && <span className="text-xs text-red-600">{loadError}</span>}
         {downloadError && <span className="text-xs text-red-600">{downloadError}</span>}
         {saveStatus === "error" && <span className="text-xs text-red-600">다음 자동저장에서 다시 시도합니다.</span>}
-        {saveStatus === "conflict" && (
-          <span className="text-xs text-amber-700">다른 사용자가 먼저 저장했습니다 — 계속 입력하면 다음 자동저장부터 정상 반영됩니다.</span>
-        )}
       </div>
+
+      {/* Step(담당자 View Filter + 안전한 Block 단위 저장) — 요청사항 6/10:
+          conflict가 나면 autosave를 완전히 멈추고(saveBlocked), 사용자가
+          "최신 내용 불러오기"로 서버 최신본을 직접 반영하기 전까지 재저장을
+          막는다 — 예전처럼 조용히 version만 받아들이고 다음 자동저장이
+          통과되게 두지 않는다. */}
+      {saveBlocked && (
+        <div className="flex flex-wrap items-center gap-2 rounded-md border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900">
+          <span>
+            다른 사용자가 회의록을 수정했습니다.
+            <br />
+            최신 내용을 불러온 후 다시 작성해 주세요.
+          </span>
+          <button
+            type="button"
+            onClick={() => void syncWithServerLatest()}
+            className="rounded-md border border-amber-400 bg-white px-2.5 py-1 font-medium text-amber-900 hover:bg-amber-100"
+          >
+            최신 내용 불러오기
+          </button>
+        </div>
+      )}
 
       {weeklyInfo?.meetingNotFoundReason && (
         <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
@@ -583,6 +792,9 @@ export function MeetingMinutesPreviewClient({
           // Step(MANUAL 안건 생성 범위 제한) — 실제 주간 회의록 작성본에서만
           // "안건 추가"를 노출한다(Template 편집 화면은 기본값 false 그대로).
           enableManualAgenda
+          // Step(담당자 View Filter + 안전한 Block 단위 저장) — documentContent
+          // 자체는 그대로 두고 Decoration으로만 화면 표시를 바꾼다.
+          assigneeFilterUserId={assigneeFilter}
         />
       )}
     </div>
