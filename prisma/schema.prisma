@@ -130,12 +130,12 @@ model User {
   /// 로그인된 웹사이트가 열려 있다는 마지막 생존 신호 — 접속/미접속 판정에 사용
   lastHeartbeatAt DateTime?
 
-  sheetSources     GoogleSheetSource[]
-  kpiDefinitions   KPIDefinition[]
-  aiUsages         AIUsage[]
-  dashboardLayouts DashboardLayout[]
-  sidebarLayouts   SidebarLayout[]
-  meetingTemplates MeetingTemplate[]
+  sheetSources         GoogleSheetSource[]
+  kpiDefinitions       KPIDefinition[]
+  aiUsages             AIUsage[]
+  dashboardLayouts     DashboardLayout[]
+  sidebarLayouts       SidebarLayout[]
+  meetingTemplates     MeetingTemplate[]
   meetingMinutesDrafts MeetingMinutesDraft[]
 
   createdTasks          Task[]                 @relation("TaskCreator")
@@ -145,6 +145,9 @@ model User {
   authoredComments      TaskComment[]          @relation("TaskCommentAuthor")
   notifications         Notification[]         @relation("NotificationUser")
   actedNotifications    Notification[]         @relation("NotificationActor")
+
+  assignedEquipment     Equipment[]
+  equipmentReservations EquipmentReservation[]
 }
 
 model GoogleSheetSource {
@@ -305,15 +308,15 @@ enum MeetingTemplateType {
 /// 먼저 비활성화한 뒤에만 대상을 활성화)을 통해서만 일어난다 — 생성
 /// (createMeetingTemplateAction)은 절대 자동으로 활성화하지 않는다.
 model MeetingTemplate {
-  id             String              @id @default(cuid())
-  name           String
-  meetingType    MeetingTemplateType
+  id              String              @id @default(cuid())
+  name            String
+  meetingType     MeetingTemplateType
   /// Step 5B-3.2까지의 block 배열(레거시). Step 5B-3.3(Rich Text Editor)부터는
   /// 더 이상 편집 UI가 이 값을 만들지 않지만, 컬럼 자체와 과거 데이터는
   /// 지우지 않는다 — documentContent가 아직 없는 Row를 Editor가 열 때 이
   /// 값을 1회성으로 문서로 변환해 보여주는 데만 쓴다
   /// (lib/meetingTemplates/richText.ts convertBlocksToDocument).
-  templateSchema String
+  templateSchema  String
   /// Step 5B-3.3(Rich Text Editor) — Monday Docs 스타일 자유 문서 본문을
   /// Tiptap/ProseMirror JSON 그대로 저장한다({type:"doc", content:[...]}).
   /// null이면 아직 한 번도 이 Editor로 저장된 적 없는 Template(= 5B-3.2
@@ -323,10 +326,10 @@ model MeetingTemplate {
   /// 이 meetingType에서 자동 회의록 생성/초기화가 실제로 사용하는 Template인지.
   /// 같은 meetingType 안에서 true는 최대 1개만 허용된다(DB 부분 유니크 인덱스로
   /// 강제, 아래 migration 참고).
-  isActive       Boolean             @default(false)
-  updatedBy      String
-  createdAt      DateTime            @default(now())
-  updatedAt      DateTime            @updatedAt
+  isActive        Boolean             @default(false)
+  updatedBy       String
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
 
   updater User @relation(fields: [updatedBy], references: [id])
 
@@ -361,9 +364,9 @@ model MeetingTemplate {
 /// 쪽(더 안전한 기본값)으로 처리한다(lib/meetingMinutes/draft.ts
 /// isTemplateOutdated).
 model MeetingMinutesDraft {
-  id              String              @id @default(cuid())
-  meetingType     MeetingTemplateType @unique
-  documentContent String
+  id                      String              @id @default(cuid())
+  meetingType             MeetingTemplateType @unique
+  documentContent         String
   /// 이 Draft를 만들거나 초기화한 시점의 활성 Template.id.
   sourceTemplateId        String?
   /// 그 시점의 활성 Template.updatedAt — 이후 Template이 다시 저장되면
@@ -377,10 +380,10 @@ model MeetingMinutesDraft {
   /// 동시성 제어) — 두 사용자가 동시에 편집했다면 나중에 저장을 시도하는
   /// 쪽이 충돌을 감지하고 조용히 덮어쓰지 않는다(lib/meetingMinutes/draft.ts
   /// saveMeetingMinutesDraftAction 참고).
-  version         Int                 @default(0)
-  updatedBy       String
-  createdAt       DateTime            @default(now())
-  updatedAt       DateTime            @updatedAt
+  version                 Int                 @default(0)
+  updatedBy               String
+  createdAt               DateTime            @default(now())
+  updatedAt               DateTime            @updatedAt
 
   updater User @relation(fields: [updatedBy], references: [id])
 }
@@ -422,17 +425,17 @@ model MeetingMinutesPendingAgenda {
 // 저장하지 않고 (dueDate < now && status != DONE)로 매 조회 시 계산한다.
 
 model Task {
-  id        String    @id @default(cuid())
-  title     String
+  id               String        @id @default(cuid())
+  title            String
   /// Step 5B-4(사용자 정의 상태/업무구분) 이전의 레거시 컬럼 — 실사용 데이터
   /// 보존을 위해 컬럼 자체는 지우지 않지만, NOT NULL 제약은 풀었고 새 코드는
   /// 더 이상 이 값을 읽거나 쓰지 않는다(진짜 값은 항상 categoryOptionId).
-  category  TaskCategory?
-  startDate DateTime
-  dueDate   DateTime
+  category         TaskCategory?
+  startDate        DateTime
+  dueDate          DateTime
   /// 레거시 컬럼 — status와 동일한 이유로 더 이상 쓰지 않는다(진짜 값은
   /// statusOptionId).
-  status    TaskStatus?   @default(TODO)
+  status           TaskStatus?   @default(TODO)
   /// Step 5B-4(사용자 정의 업무구분) — TaskCategoryOption.id를 그대로 담는다.
   /// 시스템 예약 7종은 label이 바뀌어도 이 값(예: "PROJECT")이 고정이라 기존
   /// TaskCategory enum이 하던 "업무구분별 분기"(PROJECT/MEETING 등) 역할을
@@ -446,10 +449,10 @@ model Task {
   /// 있을 수 있어 컬럼/값을 절대 지우거나 변환하지 않는다. 새 코드는 이 필드에
   /// 더 이상 쓰지 않고("레거시 메모"로 읽기 전용 표시만), 새 업데이트/댓글은
   /// 전부 TaskComment에 쌓인다.
-  memo      String?
-  createdBy String
-  createdAt DateTime     @default(now())
-  updatedAt DateTime     @updatedAt
+  memo             String?
+  createdBy        String
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
 
   /// 업무 구분 = PERSONAL_GOAL일 때만 쓰는 목표명. 필드 1개뿐이라 별도 Detail
   /// 테이블 없이 Task 컬럼으로 둔다(memo와 같은 패턴).
@@ -483,29 +486,29 @@ model Task {
   /// 이후 모든 계산된 회차에 그대로 반영된다 — "반복 일정 전체 수정/삭제"만
   /// 지원하는 V1 정책이다(특정 회차만 수정하는 기능은 별도 Exception 모델이
   /// 필요해 이번 Step 범위에서 제외, 완료 보고에서 근거 설명).
-  recurrenceType RecurrenceType @default(NONE)
+  recurrenceType               RecurrenceType             @default(NONE)
   /// 반복 간격 — 2면 "격주"/"격월". V1 UI는 항상 1("매주"/"매월")만 노출하지만
   /// 계산 로직(lib/schedule/recurrence.ts)은 이미 일반적인 간격을 지원한다.
-  recurrenceInterval Int @default(1)
+  recurrenceInterval           Int                        @default(1)
   /// WEEKLY 전용 — 반복 요일("MON"~"SUN") 배열. 그 외 recurrenceType에서는 항상 빈 배열.
-  recurrenceWeekdays String[] @default([])
+  recurrenceWeekdays           String[]                   @default([])
   /// MONTHLY 전용 — 날짜 고정 방식인지 N번째 요일 방식인지.
-  recurrenceMonthlyRuleType RecurrenceMonthlyRuleType?
+  recurrenceMonthlyRuleType    RecurrenceMonthlyRuleType?
   /// MONTHLY + DAY_OF_MONTH 전용 — 1~31. 그 달에 해당 날짜가 없으면(예: 2월
   /// 31일) 그 달은 건너뛰고 다음 달부터 다시 계산한다.
-  recurrenceMonthDay Int?
+  recurrenceMonthDay           Int?
   /// MONTHLY + NTH_WEEKDAY 전용 — 1~4(첫째~넷째 주) 또는 -1(마지막 주).
   recurrenceMonthlyWeekOrdinal Int?
   /// MONTHLY + NTH_WEEKDAY 전용 — 기준 요일("MON" 등 1개).
-  recurrenceMonthlyWeekday String?
+  recurrenceMonthlyWeekday     String?
   /// 반복 종료일(그 날짜까지 포함). null이면 종료일 없음(무기한 반복).
-  recurrenceEndDate DateTime?
+  recurrenceEndDate            DateTime?
   /// Step(반복 일정 UX 개선) — "N회 반복" 종료 조건. null이면 횟수 제한 없음.
   /// recurrenceEndDate와 동시에 의미를 갖지 않는다(서버가 저장 시 항상 한쪽만
   /// 채운다 — lib/schedule/recurrence.ts의 occurrence 계산이 이 값을 그대로
   /// count로 쓴다). 기존 Row는 전부 null이라 기존 endDate/무한반복 동작에는
   /// 영향이 없다.
-  recurrenceCount Int?
+  recurrenceCount              Int?
 
   /// Step(담당자 UX 개선) — "공통"(특정 개인 담당자 없이 의도적으로 팀 전체
   /// 업무로 등록)과 "담당자 미지정"(assignees가 비어 있지만 그 이유가 없는
@@ -797,4 +800,170 @@ model Notification {
   @@unique([commentId, userId, type])
   @@index([userId, isRead])
   @@index([createdAt])
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// 설비 관리(Equipment Management) — 시험 설비 예약/사용 관리. ZIP 디자인
+// 레퍼런스(설비 관리.dc.html)를 실제 DB 기반 기능으로 이식한다. 기존
+// 모델은 전혀 수정하지 않고(순수 추가), User에만 역참조 relation 2개를
+// 더했다.
+// ─────────────────────────────────────────────────────────────────────────
+
+/// 설비 구분 — 집계 지표와 예약 다이얼로그의 입력 필드를 결정한다.
+/// GENERAL_REPEAT("일반/반복")은 예약 시점에 목적(1회성 일반 사용 / 반복
+/// 싸이클 사용)을 다시 선택해, 그 목적에 따라 시료 수량 또는 사이클 횟수
+/// 입력란이 갈린다.
+enum EquipmentKind {
+  GENERAL
+  REPEAT
+  ENVIRONMENT
+  GENERAL_REPEAT
+}
+
+enum EquipmentLocation {
+  NURIKKUM
+  HYANGDONG
+}
+
+/// 관리 대상 등급 — 상/중은 예약(캘린더) 대상, 하는 시료 수량 건수 집계
+/// 전용이며 예약/캘린더를 전혀 타지 않는다(등급이 액션 버튼 분기의 1차
+/// 기준, 디자인 레퍼런스 README "핵심 규칙" 참고).
+enum EquipmentGrade {
+  HIGH
+  MID
+  LOW
+}
+
+enum EquipmentStatus {
+  AVAILABLE
+  RESERVED
+  IN_USE
+  UNDER_REPAIR
+}
+
+enum EquipmentTimeHalf {
+  AM
+  PM
+}
+
+/// "개발 1팀"/"개발 2팀" — 실제 User가 아니라 파트원이 대리 등록할 때 쓰는
+/// 팀 placeholder다(디자인 레퍼런스: "개발팀이 사용하는 설비는 파트원이
+/// 일정을 문의한 뒤 대리 등록"). 캘린더에는 항상 빈 회색 레인으로만
+/// 표시되고 실제 일정 막대는 그리지 않는다 — 그래서 실사용자(User)와는
+/// 별도 nullable 필드로 분리했다(Equipment/EquipmentReservation 양쪽 다
+/// assignedUserId/assignedTeamLabel 중 정확히 하나만 채운다).
+enum EquipmentTeamLabel {
+  TEAM_1
+  TEAM_2
+}
+
+/// GENERAL_REPEAT(일반/반복) 설비를 예약할 때만 의미가 있다 — 1회성 일반
+/// 사용이면 시료 수량을, 반복 싸이클 사용이면 사이클 횟수를 입력받는다.
+enum EquipmentUsagePurpose {
+  ONE_OFF
+  CYCLE
+}
+
+/// EquipmentUsageLog.amount가 무엇을 세는 값인지 — 설비 kind로부터
+/// 결정된다(GENERAL/GENERAL_REPEAT 1회성 → COUNT, REPEAT → CYCLE,
+/// ENVIRONMENT → HOUR). 사용 통계 화면의 "지표"/"단위" 컬럼과 1:1 대응.
+enum EquipmentMetricKind {
+  COUNT
+  CYCLE
+  HOUR
+}
+
+/// 설비 마스터 — id는 cuid가 아니라 실제 장비 관리 번호("QA-TEQ-001" 등)를
+/// 그대로 쓴다(TaskCategoryOption의 "시스템 예약 key를 literal id로" 관례와
+/// 같은 이유: 이미 안정적이고 의미 있는 자연 키가 있으면 별도 surrogate
+/// key를 만들지 않는다). status/currentStart/currentEnd/currentHalf/
+/// assignedUserId/assignedTeamLabel은 "지금 이 설비의 상태"를 나타내는
+/// 가변 스냅샷이다 — 예약 이력 자체는 EquipmentReservation에 별도로 쌓인다
+/// (예: "종료" 후에도 지난 예약은 캘린더에 과거 일정으로 남아야 하므로,
+/// 이 스냅샷과 이력을 하나의 테이블로 합치지 않는다).
+model Equipment {
+  id                String              @id
+  kind              EquipmentKind
+  name              String
+  location          EquipmentLocation
+  grade             EquipmentGrade
+  status            EquipmentStatus     @default(AVAILABLE)
+  assignedUserId    String?
+  assignedTeamLabel EquipmentTeamLabel?
+  /// 아래 3개는 "달력 날짜"(lib/kst.ts 관례 — 시각 없이 UTC 자정으로 저장)다.
+  currentStart      DateTime?
+  currentEnd        DateTime?
+  currentHalf       EquipmentTimeHalf?
+  /// 고장 신고 시 입력한 내용 — 수리 완료 처리되면 다시 null로 지운다.
+  currentFaultNote  String?
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+
+  assignedUser User?                  @relation(fields: [assignedUserId], references: [id])
+  reservations EquipmentReservation[]
+  usageLogs    EquipmentUsageLog[]
+
+  @@index([assignedUserId])
+  @@index([status])
+}
+
+/// 예약 이력 — 확정된 예약 1건. "종료"(정상 사용 완료)로는 절대 삭제되지
+/// 않고 캘린더에 과거 일정으로 계속 남는다. "예약 취소"/"고장 신고로 인한
+/// 강제 전환"일 때만 실제로 삭제한다(실제로 설비를 쓰지 않았던 예약이라
+/// 이력으로 남길 이유가 없다 — 디자인 레퍼런스의 실제 동작 기준).
+model EquipmentReservation {
+  id                String                 @id @default(cuid())
+  equipmentId       String
+  assignedUserId    String?
+  assignedTeamLabel EquipmentTeamLabel?
+  /// "달력 날짜"(시각 없음, lib/kst.ts 관례).
+  startDate         DateTime
+  endDate           DateTime
+  half              EquipmentTimeHalf
+  /// GENERAL_REPEAT 설비 예약에서만 채운다.
+  purpose           EquipmentUsagePurpose?
+  /// REPEAT, 또는 GENERAL_REPEAT+CYCLE 목적일 때만.
+  cycles            Int?
+  /// ENVIRONMENT일 때만.
+  hours             Int?
+  /// GENERAL, 또는 GENERAL_REPEAT+ONE_OFF 목적일 때만 — 이 값이 사용 통계의
+  /// "사용 횟수" 누적에 가산된다(EquipmentUsageLog로 반영).
+  sampleCount       Int?
+  createdAt         DateTime               @default(now())
+  updatedAt         DateTime               @updatedAt
+
+  equipment    Equipment          @relation(fields: [equipmentId], references: [id])
+  assignedUser User?              @relation(fields: [assignedUserId], references: [id])
+  usageLog     EquipmentUsageLog?
+
+  @@index([equipmentId])
+  @@index([startDate])
+  @@index([endDate])
+}
+
+/// 사용 통계의 유일한 실제 데이터 원천(디자인 레퍼런스의 더미 해시 시드값을
+/// 대체) — 월/분기/연 집계는 이 테이블을 recordedAt 기준으로 groupBy해서
+/// 계산한다. reservationId가 있으면(REPEAT 사이클/ENVIRONMENT 시간/
+/// GENERAL_REPEAT 1회성 시료) 그 예약 1건과 1:1 대응하고, 예약을
+/// 수정/취소하면 이 Row도 함께 갱신/삭제된다(@@unique + onDelete: Cascade).
+/// reservationId가 null이면 등급 '하' 설비의 수동 시료 수량 등록(예약 없이
+/// "사용" 다이얼로그로만 기록)이다.
+model EquipmentUsageLog {
+  id            String              @id @default(cuid())
+  equipmentId   String
+  reservationId String?             @unique
+  metricKind    EquipmentMetricKind
+  amount        Int
+  /// 이 값이 어느 달/분기/연 집계에 들어가는지를 결정하는 "달력 날짜".
+  /// 예약 기반 기록은 그 예약의 startDate를 그대로 쓰고, 등급 '하' 수동
+  /// 기록은 등록한 날을 쓴다.
+  recordedAt    DateTime
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
+
+  equipment   Equipment             @relation(fields: [equipmentId], references: [id])
+  reservation EquipmentReservation? @relation(fields: [reservationId], references: [id], onDelete: Cascade)
+
+  @@index([equipmentId])
+  @@index([recordedAt])
 }

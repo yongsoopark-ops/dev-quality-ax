@@ -5,12 +5,15 @@ export type SidebarMenuId =
   | "CHAT"
   | "SCHEDULE"
   | "MEETING_MINUTES"
+  | "FACILITY_RESERVATION"
+  | "FACILITY_CALENDAR"
+  | "FACILITY_STATS"
   | "USER_MANAGEMENT"
   | "KPI_MANAGEMENT"
   | "DATA_SOURCES"
   | "API_USAGE";
 
-export type SidebarGroupId = "OPERATIONS" | "PROJECT_MANAGEMENT";
+export type SidebarGroupId = "OPERATIONS" | "PROJECT_MANAGEMENT" | "FACILITY_MANAGEMENT";
 
 export interface SidebarMenuDef {
   id: SidebarMenuId;
@@ -95,6 +98,39 @@ export const SIDEBAR_MENUS: SidebarMenuDef[] = [
     defaultOrder: 1,
   },
   {
+    // 설비 관리(Equipment Management) — 개발품질 파트의 시험 설비 예약/사용
+    // 관리. 3개 서브 화면을 각각 별도 Menu로 등록한다(회의록처럼 한 Menu
+    // 아래로 통합하지 않는다 — 디자인 레퍼런스가 좌측 네비게이션에 예약
+    // 등록/일정 캘린더/사용 통계 3개를 나란히 노출하도록 명시했다).
+    // requiredRole은 null — 회의록/일정 관리와 같은 이유로 MEMBER도 예약을
+    // 등록/조회할 수 있어야 한다.
+    id: "FACILITY_RESERVATION",
+    label: "예약 등록",
+    href: "/facility/reservation",
+    requiredRole: null,
+    fixed: false,
+    defaultGroupId: "FACILITY_MANAGEMENT",
+    defaultOrder: 0,
+  },
+  {
+    id: "FACILITY_CALENDAR",
+    label: "일정 캘린더",
+    href: "/facility/calendar",
+    requiredRole: null,
+    fixed: false,
+    defaultGroupId: "FACILITY_MANAGEMENT",
+    defaultOrder: 1,
+  },
+  {
+    id: "FACILITY_STATS",
+    label: "사용 통계",
+    href: "/facility/stats",
+    requiredRole: null,
+    fixed: false,
+    defaultGroupId: "FACILITY_MANAGEMENT",
+    defaultOrder: 2,
+  },
+  {
     id: "USER_MANAGEMENT",
     label: "사용자 관리",
     href: "/admin/users",
@@ -140,7 +176,8 @@ export const SIDEBAR_MENUS: SidebarMenuDef[] = [
  */
 export const SIDEBAR_GROUPS: SidebarGroupDef[] = [
   { id: "PROJECT_MANAGEMENT", label: "프로젝트 관리", defaultOrder: 0 },
-  { id: "OPERATIONS", label: "운영 관리", defaultOrder: 1 },
+  { id: "FACILITY_MANAGEMENT", label: "설비 관리", defaultOrder: 1 },
+  { id: "OPERATIONS", label: "운영 관리", defaultOrder: 2 },
 ];
 
 export function getMenuById(id: string): SidebarMenuDef | undefined {
