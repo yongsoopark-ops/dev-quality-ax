@@ -5,6 +5,7 @@ import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { parseIsoDate, addMonthsTo, monthsBetween } from "@/lib/progress/date";
 import { PROGRESS_SAMPLE_STAGE_PW3_INDEX } from "@/lib/progress/constants";
+import { cycleSubItemStatus } from "@/lib/progress/derive";
 import type { ProgressItemStatus, ProgressStatus } from "@/app/generated/prisma/enums";
 
 /**
@@ -251,12 +252,12 @@ export async function setSubProjectStatusAction(id: string, status: ProgressStat
   return { ok: true };
 }
 
-/** 세부 목표 항목의 예정⇄완료 토글 — ZIP cycle(). */
+/** 세부 목표 항목의 예정→진행중→완료→예정 순환. */
 export async function toggleSubProjectItemStatusAction(itemId: string): Promise<ActionResult> {
   await requireUser();
   const item = await prisma.progressSubProjectItem.findUnique({ where: { id: itemId }, select: { status: true } });
   if (!item) return { error: "항목을 찾을 수 없습니다." };
-  await prisma.progressSubProjectItem.update({ where: { id: itemId }, data: { status: item.status === "DONE" ? "WAITING" : "DONE" } });
+  await prisma.progressSubProjectItem.update({ where: { id: itemId }, data: { status: cycleSubItemStatus(item.status) } });
   revalidateProgress();
   return { ok: true };
 }

@@ -1,6 +1,7 @@
 import { PROGRESS_ROUND_STAGE_INDEX, PROGRESS_SAMPLE_STAGE_PW3_INDEX, PROGRESS_SAMPLE_STAGE_PW4_INDEX, pwStageLabel } from "@/lib/progress/constants";
 import { addMonthsToDate, daysBetweenDates, parseIsoDate, todayCalendarDate } from "@/lib/progress/date";
 import type { ProgressCommonTaskRow, ProgressRegularProjectRow, ProgressSubProjectRow } from "@/lib/progress/types";
+import type { ProgressItemStatus } from "@/app/generated/prisma/enums";
 
 /**
  * 진행 현황 — 순수 파생값 계산(DB 의존 없음). ZIP 분석 리포트가 정리한
@@ -99,10 +100,21 @@ export function sampleDday(runIndexes: number[], samplePw3Date: string, samplePw
 
 /** 서브 프로젝트 완료 — status가 done이거나, 모든 세부 목표가 완료(ZIP
  * subDone, §4). status/items 각 항목의 status만 있으면 되므로, 호출부가
- * Row 전체를 만들 필요 없이 최소 구조만 넘길 수 있게 구조적 타입을 쓴다. */
+ * Row 전체를 만들 필요 없이 최소 구조만 넘길 수 있게 구조적 타입을 쓴다.
+ * IN_PROGRESS 항목은 DONE이 아니므로 `every`에서 자동으로 미완료 취급된다
+ * (별도 분기 불필요). */
 export function isSubProjectDone(row: { status: ProgressSubProjectRow["status"]; items: { status: ProgressSubProjectRow["items"][number]["status"] }[] }): boolean {
   if (row.status === "DONE") return true;
   return row.items.length > 0 && row.items.every((it) => it.status === "DONE");
+}
+
+/** 서브 세부 목표 상태 순환(예정 → 진행중 → 완료 → 예정) — 서브 전용.
+ * 공통 업무는 여전히 WAITING/DONE만 토글하므로
+ * (toggleCommonTaskItemStatusAction) 이 함수를 쓰지 않는다. */
+export function cycleSubItemStatus(status: ProgressItemStatus): ProgressItemStatus {
+  if (status === "WAITING") return "IN_PROGRESS";
+  if (status === "IN_PROGRESS") return "DONE";
+  return "WAITING";
 }
 
 /** 공통 업무 완료 — 그룹 자체엔 status가 없고 항목 전부 완료일 때만(ZIP

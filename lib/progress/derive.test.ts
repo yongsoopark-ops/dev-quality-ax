@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   currentStageIndex,
   currentStageText,
+  cycleSubItemStatus,
   effectiveRounds,
   isCommonTaskActiveInMonth,
   isCommonTaskDone,
@@ -108,11 +109,20 @@ describe("isSubProjectDone / isCommonTaskDone", () => {
     expect(isSubProjectDone({ status: "IN_PROGRESS", items: [{ status: "DONE" }, { status: "WAITING" }] })).toBe(false);
     expect(isSubProjectDone({ status: "PLANNED", items: [] })).toBe(false);
   });
+  it("세부 목표가 진행중이면 완료로 치지 않는다(진행중 항목 1개라도 있으면 미완료)", () => {
+    expect(isSubProjectDone({ status: "PLANNED", items: [{ status: "IN_PROGRESS" }, { status: "DONE" }] })).toBe(false);
+  });
   it("공통 업무는 항목이 1개 이상이고 전부 완료해야 완료(그룹 자체 status 없음)", () => {
     expect(isCommonTaskDone({ items: [] })).toBe(false);
     expect(isCommonTaskDone({ items: [{ status: "DONE" }] })).toBe(true);
     expect(isCommonTaskDone({ items: [{ status: "DONE" }, { status: "WAITING" }] })).toBe(false);
   });
+});
+
+describe("cycleSubItemStatus — 서브 세부 목표 예정→진행중→완료→예정 순환", () => {
+  it("예정 → 진행중", () => expect(cycleSubItemStatus("WAITING")).toBe("IN_PROGRESS"));
+  it("진행중 → 완료", () => expect(cycleSubItemStatus("IN_PROGRESS")).toBe("DONE"));
+  it("완료 → 예정(한 바퀴 순환)", () => expect(cycleSubItemStatus("DONE")).toBe("WAITING"));
 });
 
 describe("isCommonTaskActiveInMonth — '업무 유형' 필터 칩의 공통 건수가 선택 월에 반응하는 근거", () => {

@@ -39,8 +39,11 @@ export const PROGRESS_STATUS_LABEL: Record<ProgressStatus, string> = {
   DONE: "완료",
 };
 
+/** 세부 목표 상태 드롭다운(서브 프로젝트 폼 전용) 라벨 — 공통 업무는 이
+ * 항목별 상태 드롭다운을 쓰지 않으므로 IN_PROGRESS를 추가해도 영향 없다. */
 export const PROGRESS_ITEM_STATUS_LABEL: Record<ProgressItemStatus, string> = {
   WAITING: "예정",
+  IN_PROGRESS: "진행중",
   DONE: "완료",
 };
 

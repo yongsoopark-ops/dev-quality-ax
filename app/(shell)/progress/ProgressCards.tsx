@@ -13,6 +13,8 @@ import {
   DESIGN_REPEAT_TAG_OVERDUE,
   DESIGN_STATUS,
   DESIGN_SUB_BAR_COLOR,
+  DESIGN_SUB_ITEM_INPROGRESS_ROW,
+  DESIGN_SUB_ITEM_STATUS,
   DESIGN_SUB_PCT_TEXT_COLOR,
 } from "@/lib/progress/designTokens";
 import { PROGRESS_STATUS_LABEL, repeatDayLabel } from "@/lib/progress/constants";
@@ -143,7 +145,7 @@ export function RegularProjectCard({
       </div>
 
       {/* 가운데: PW 레일 + 현재 단계 문구 */}
-      <div className="flex min-w-0 flex-col gap-1.5" style={{ flex: "2 1 300px" }}>
+      <div className="flex min-w-0 flex-col gap-1.5" style={{ flex: "2 1 300px", maxWidth: 600 }}>
         <StageRail
           runIndexes={project.stageRunIndexes}
           skipIndexes={project.stageSkipIndexes}
@@ -161,10 +163,10 @@ export function RegularProjectCard({
             <>
               <span className="shrink-0 font-semibold text-navy-700">{stageCode}</span>
               <span className="shrink-0 text-[#cfd5e0]">·</span>
-              <span className="min-w-0 flex-1 truncate text-[#4b5364]">{stageName}</span>
+              <span className="min-w-0 shrink truncate text-[#4b5364]">{stageName}</span>
             </>
           ) : (
-            <span className="min-w-0 flex-1 truncate text-[#4b5364]">{stageName}</span>
+            <span className="min-w-0 shrink truncate text-[#4b5364]">{stageName}</span>
           )}
           {sample && <span title={sample.tooltip} className={smallBadgeClass} style={toneStyle(sample.tone)}>{sample.text}</span>}
           {review && <span title={review.tooltip} className={smallBadgeClass} style={toneStyle(review.tone)}>{review.text}</span>}
@@ -228,7 +230,10 @@ export function SubProjectCard({
   const doneThisQ = thisQItems.filter((it) => it.status === "DONE").length;
   const span = subProjectItemSpan(project.items);
   const spanLabel = span ? (span.start.year === span.end.year && span.start.q === span.end.q ? `${span.start.year} Q${span.start.q}` : `${span.start.year} Q${span.start.q} – ${span.end.year} Q${span.end.q}`) : "";
-  const firstIncompleteId = thisQItems.find((it) => it.status !== "DONE")?.id;
+  // "미완료 중 강조할 항목" — 진행중 항목이 있으면 그 항목 하나만 강조하고
+  // (이미 amber 행 강조가 있으니 중복 강조 방지), 없으면 종전대로 첫
+  // 미완료(예정) 항목을 강조한다.
+  const firstIncompleteId = thisQItems.find((it) => it.status === "IN_PROGRESS")?.id ?? thisQItems.find((it) => it.status !== "DONE")?.id;
   // 배지 = "지금 보고 있는 분기"(quarter prop, 섹션의 ‹ › 분기 이동 값). 등록
   // 당시 분기(project.quarterStartYear/Q)는 다른 분기를 보고 있을 때도
   // 고정돼 있어 진행률 구간(spanLabel)과 어긋나 보였다 — 그건 배지가 아니라
@@ -274,22 +279,24 @@ export function SubProjectCard({
         {thisQItems.length === 0 && <div className="rounded-lg border border-dashed border-[#d5dbe5] px-3 py-2 text-[12.5px] text-[#8a91a3]">{quarterLabel(quarter)}에 진행 예정인 세부 목표가 없습니다.</div>}
         {thisQItems.map((it) => {
           const done = it.status === "DONE";
+          const inProgress = it.status === "IN_PROGRESS";
           const isCur = !done && it.id === firstIncompleteId;
           const idx = project.items.findIndex((x) => x.id === it.id);
-          const k = DESIGN_ITEM_STATUS[it.status];
+          const k = DESIGN_SUB_ITEM_STATUS[it.status];
           return (
             <button
               key={it.id}
               type="button"
               disabled={pending}
               onClick={() => onToggleItem(it.id)}
-              className="flex w-full items-center gap-2 rounded-[7px] border border-transparent px-2 py-[5px] text-left hover:bg-[#f7f9fc]"
+              className="flex w-full items-center gap-2 rounded-[7px] border px-2 py-[5px] text-left hover:bg-[#f7f9fc]"
+              style={inProgress ? { borderColor: DESIGN_SUB_ITEM_INPROGRESS_ROW.border, background: DESIGN_SUB_ITEM_INPROGRESS_ROW.background } : { borderColor: "transparent" }}
             >
               <span className="w-[13px] shrink-0 text-center text-[11.5px]" style={{ color: k.color }}>{k.marker}</span>
               <span className="shrink-0 text-[11px] tabular-nums text-[#9aa1b1]">{String(idx + 1).padStart(2, "0")}</span>
               <span
                 className="min-w-0 flex-1 truncate text-[12.5px]"
-                style={{ color: done ? "#8a91a3" : "#1b1f2b", fontWeight: isCur ? 600 : 400 }}
+                style={{ color: done ? "#8a91a3" : "#1b1f2b", fontWeight: isCur ? 600 : 400, textDecoration: done ? "line-through" : "none" }}
               >
                 {it.text}
               </span>
@@ -357,7 +364,9 @@ export function CommonOwnerCard({
       <div className="flex flex-col gap-0.5">
         {items.map((it) => {
           const done = it.status === "DONE";
-          const k = DESIGN_ITEM_STATUS[it.status];
+          // 공통 업무 항목은 항상 WAITING|DONE만 쓴다(서브 전용 IN_PROGRESS는
+          // 여기 오지 않는다) — DESIGN_ITEM_STATUS는 그 2상태만 다룬다.
+          const k = DESIGN_ITEM_STATUS[it.status as "WAITING" | "DONE"];
           const canCarry = !done;
           const overdue = it.repeat && !done && isRepeatDueDayPassed(it.repeatDay, month);
           const repeatTagTone = overdue ? DESIGN_REPEAT_TAG_OVERDUE : DESIGN_REPEAT_TAG;

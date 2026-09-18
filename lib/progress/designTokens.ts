@@ -30,16 +30,37 @@ export const DESIGN_STATUS: Record<ProgressStatus, DesignColorSet> = {
   DONE: { color: "#15803d", bg: "#f0fdf4", border: "#bbf7d0" },
 };
 
-/** 세부 목표/공통 업무 항목 상태(ZIP IT — ST와 "예정" 회색이 미묘하게 다름,
- * 그 미묘한 차이는 유지하되 톤은 AX neutral 스케일 안에서 고른다).
+/** 공통 업무 항목 상태(ZIP IT — ST와 "예정" 회색이 미묘하게 다름, 그 미묘한
+ * 차이는 유지하되 톤은 AX neutral 스케일 안에서 고른다). 공통 업무는
+ * WAITING/DONE 2상태만 쓴다 — 서브 세부 목표의 3상태(DESIGN_SUB_ITEM_STATUS)
+ * 와 타입 레벨에서부터 분리해, 공통 쪽에 실수로 IN_PROGRESS가 섞여 들어가지
+ * 않게 한다.
  *  - WAITING → Tailwind neutral-400/neutral-50/neutral-200(PLANNED의
  *    neutral-500보다 한 단계 옅은 회색 — 원본의 "미묘하게 다름"을 보존)
  *  - DONE    → DESIGN_STATUS.DONE과 동일한 green-700/green-50/green-200
  *    (완료=초록 의미를 정규/서브/공통 전부 동일하게 유지) */
-export const DESIGN_ITEM_STATUS: Record<ProgressItemStatus, DesignColorSet & { marker: string }> = {
+export const DESIGN_ITEM_STATUS: Record<Extract<ProgressItemStatus, "WAITING" | "DONE">, DesignColorSet & { marker: string }> = {
   WAITING: { color: "#a3a3a3", bg: "#fafafa", border: "#e5e5e5", marker: "○" },
   DONE: { color: "#15803d", bg: "#f0fdf4", border: "#bbf7d0", marker: "●" },
 };
+
+/** 서브 세부 목표 전용 3상태(예정/진행중/완료) — 공통 업무는 여전히
+ * DESIGN_ITEM_STATUS(2상태)만 쓴다. 예정/완료 값은 위와 동일하게 유지하고
+ * 진행중만 새로 추가한다.
+ *  - IN_PROGRESS → Tailwind amber-700/amber-50/amber-200(요청한
+ *    "#b0730f 수준의 amber-700" — 기존에 이미 쓰던 amber 토큰(예: 보류/개선
+ *    차수 배지)과 동일 값으로 맞춰 새 hex를 만들지 않았다) */
+export const DESIGN_SUB_ITEM_STATUS: Record<ProgressItemStatus, DesignColorSet & { marker: string }> = {
+  WAITING: { color: "#a3a3a3", bg: "#fafafa", border: "#e5e5e5", marker: "○" },
+  IN_PROGRESS: { color: "#b45309", bg: "#fffbeb", border: "#fde68a", marker: "●" },
+  DONE: { color: "#15803d", bg: "#f0fdf4", border: "#bbf7d0", marker: "●" },
+};
+
+/** 서브 세부 목표 "진행중" 행 전체 강조 — 배지 배경(amber-50, #fffbeb)을
+ * 그대로 행 전체에 칠하면 시각적으로 무거워져서, 같은 amber-50 색상의
+ * 알파만 낮춰 재사용한다(새 색을 만들지 않음). 테두리는 배지와 동일한
+ * amber-200. */
+export const DESIGN_SUB_ITEM_INPROGRESS_ROW = { border: "#fde68a", background: "rgba(255, 251, 235, 0.55)" };
 
 /** D-day 배지 톤 — 핸드오프 §0 "프로토타입 인라인 스타일을 그대로 복사하지
  * 말고 기존 AX 컴포넌트/토큰으로 구현" 원칙에 따라, Design ZIP의 hex를
