@@ -13,6 +13,7 @@ import { addQuarters, compareMonth, compareQuarter, monthLabel, quarterLabel, ty
 import type { ProgressAssigneeOption, ProgressRegularProjectRow } from "@/lib/progress/types";
 import type { RegularProjectFormInput, SubProjectFormInput, SubProjectItemInput, CommonTaskFormInput } from "./actions";
 import { SegmentedDateInput, SegmentedMonthInput } from "./DateSegments";
+import { PROGRESS_UI_SCALE } from "./ProgressPageShell";
 
 /**
  * 진행 현황 — 업무 등록/수정 Drawer. ZIP §8의 3단계(유형 선택 → 유형별
@@ -27,16 +28,48 @@ import { SegmentedDateInput, SegmentedMonthInput } from "./DateSegments";
  * 840px이 아니라 1260px로 나와서 알아냄). ProgressPageShell 바깥(예:
  * Portal)으로 옮기게 되면 그때는 여기에도 PROGRESS_UI_SCALE을 다시
  * 걸어야 한다.
+ *
+ * 헤더/본문/푸터 3분할 — 세부 목표가 많은 서브 프로젝트 폼처럼 본문이
+ * 길어지면 예전엔 모달 박스 전체(`max-h-[92vh] overflow-y-auto`)가
+ * 늘어나 뷰포트를 넘쳤고, 그 늘어난 부분이 안 보여서 저장 버튼에 손을
+ * 댈 수 없었다. 이제 모달 박스는 `flex-col + overflow-hidden`로 고정하고
+ * 헤더·푸터는 `shrink-0`, 본문만 `flex-1 overflow-y-auto`로 스크롤을
+ * 떠맡는다.
+ *
+ * `calc((100vh - 72px) / PROGRESS_UI_SCALE)` — `vh`도 다른 px 값과
+ * 마찬가지로 이 배율이 걸린 subtree 안에서는 실제 렌더 크기가
+ * "값 × PROGRESS_UI_SCALE"이 된다(실측: `50vh`가 진짜 뷰포트의 50%가
+ * 아니라 60%로 렌더됨 — 1.2배 그대로 곱해짐). `calc` 전체를
+ * PROGRESS_UI_SCALE로 나눠주면 그 곱셈이 상쇄돼 "실제 뷰포트 - 72
+ * 실제 px"이 정확히 나온다(1440×900 뷰포트로 실측 확인: 828px 정확히
+ * 일치) — max-width 때와 같은 "목표값 ÷ 배율" 패턴을 여기도 그대로
+ * 적용한 것이다.
  */
-export function DrawerShell({ children, width = 480, onClose }: { children: React.ReactNode; width?: number; onClose: () => void }) {
+export function DrawerShell({
+  header,
+  footer,
+  children,
+  width = 480,
+  onClose,
+}: {
+  header: React.ReactNode;
+  footer?: React.ReactNode;
+  children: React.ReactNode;
+  width?: number;
+  onClose: () => void;
+}) {
   return (
     <div className="fixed inset-0 z-40 flex items-center justify-center bg-[rgba(15,23,42,0.45)]" onClick={onClose}>
       <div
-        className="flex max-h-[92vh] flex-col gap-4 overflow-y-auto rounded-lg bg-white p-5 shadow-[0_0_0_1px_#e2e8f0,0_16px_40px_rgba(15,23,42,0.16)]"
-        style={{ width: `min(${width}px, 100%)` }}
+        className="flex flex-col overflow-hidden rounded-lg bg-white shadow-[0_0_0_1px_#e2e8f0,0_16px_40px_rgba(15,23,42,0.16)]"
+        style={{ width: `min(${width}px, 100%)`, maxHeight: `calc((100vh - 72px) / ${PROGRESS_UI_SCALE})` }}
         onClick={(e) => e.stopPropagation()}
       >
-        {children}
+        <div className="shrink-0 border-b border-navy-100 px-5 py-4">{header}</div>
+        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+          <div className="flex flex-col gap-4">{children}</div>
+        </div>
+        {footer && <div className="shrink-0 border-t border-navy-100 px-5 py-4">{footer}</div>}
       </div>
     </div>
   );
@@ -44,11 +77,16 @@ export function DrawerShell({ children, width = 480, onClose }: { children: Reac
 
 export function TypePickStep({ onClose, onPick }: { onClose: () => void; onPick: (key: "regular" | "sub" | "common") => void }) {
   return (
-    <DrawerShell width={520} onClose={onClose}>
-      <div className="flex items-center justify-between">
-        <div className="text-base font-semibold text-navy-950">업무 등록</div>
-        <button type="button" onClick={onClose} className="text-neutral-400 hover:text-navy-950">×</button>
-      </div>
+    <DrawerShell
+      width={520}
+      onClose={onClose}
+      header={
+        <div className="flex items-center justify-between">
+          <div className="text-base font-semibold text-navy-950">업무 등록</div>
+          <button type="button" onClick={onClose} className="text-neutral-400 hover:text-navy-950">×</button>
+        </div>
+      }
+    >
       <div className="flex flex-col gap-2">
         {PROGRESS_TYPE_PICK_OPTIONS.map((opt) => (
           <button
@@ -148,15 +186,28 @@ export function RegularProjectForm({
   onDeleteConfirm: () => void;
 }) {
   return (
-    <DrawerShell width={560} onClose={onClose}>
-      <div className="flex items-center justify-between">
-        <div>
-          <div className="text-base font-semibold text-navy-950">{editing ? "정규 프로젝트 수정" : "정규 프로젝트 등록"}</div>
-          <div className="text-[12px] text-neutral-500">일정과 개선 차수, 상태를 관리합니다 (PW 단계는 현황판 레일에서 변경)</div>
+    <DrawerShell
+      width={560}
+      onClose={onClose}
+      header={
+        <div className="flex items-center justify-between">
+          <div>
+            <div className="text-base font-semibold text-navy-950">{editing ? "정규 프로젝트 수정" : "정규 프로젝트 등록"}</div>
+            <div className="text-[12px] text-neutral-500">일정과 개선 차수, 상태를 관리합니다 (PW 단계는 현황판 레일에서 변경)</div>
+          </div>
+          <button type="button" onClick={onClose} className="text-neutral-400 hover:text-navy-950">×</button>
         </div>
-        <button type="button" onClick={onClose} className="text-neutral-400 hover:text-navy-950">×</button>
-      </div>
-
+      }
+      footer={
+        <div className="flex items-center gap-2">
+          {editing && <DeleteFooterButton confirmDelete={confirmDelete} onFirstClick={onDeleteClick} onConfirm={onDeleteConfirm} />}
+          <button type="button" onClick={onClose} className="ml-auto rounded border border-navy-100 px-3 py-1.5 text-sm text-navy-950/70">닫기</button>
+          <button type="button" onClick={onSave} disabled={pending} className="rounded bg-navy-900 px-3 py-1.5 text-sm text-white">
+            {editing ? "수정 저장" : "등록"}
+          </button>
+        </div>
+      }
+    >
       <div>
         <FieldLabel>프로젝트명</FieldLabel>
         <TextInput placeholder="예) 차량용 무선충전 거치대 3세대" value={draft.name} onChange={(e) => onChange({ name: e.target.value })} />
@@ -239,14 +290,6 @@ export function RegularProjectForm({
       )}
 
       {error && <p className="m-0 text-[13px] text-red-600">{error}</p>}
-
-      <div className="flex items-center gap-2">
-        {editing && <DeleteFooterButton confirmDelete={confirmDelete} onFirstClick={onDeleteClick} onConfirm={onDeleteConfirm} />}
-        <button type="button" onClick={onClose} className="ml-auto rounded border border-navy-100 px-3 py-1.5 text-sm text-navy-950/70">닫기</button>
-        <button type="button" onClick={onSave} disabled={pending} className="rounded bg-navy-900 px-3 py-1.5 text-sm text-white">
-          {editing ? "수정 저장" : "등록"}
-        </button>
-      </div>
     </DrawerShell>
   );
 }
@@ -371,12 +414,25 @@ export function SubProjectForm({
   let dragIndex: number | null = null;
 
   return (
-    <DrawerShell width={620} onClose={onClose}>
-      <div className="flex items-center justify-between">
-        <div className="text-base font-semibold text-navy-950">{editing ? "서브 프로젝트 수정" : "서브 프로젝트 등록"}</div>
-        <button type="button" onClick={onClose} className="text-neutral-400 hover:text-navy-950">×</button>
-      </div>
-
+    <DrawerShell
+      width={620}
+      onClose={onClose}
+      header={
+        <div className="flex items-center justify-between">
+          <div className="text-base font-semibold text-navy-950">{editing ? "서브 프로젝트 수정" : "서브 프로젝트 등록"}</div>
+          <button type="button" onClick={onClose} className="text-neutral-400 hover:text-navy-950">×</button>
+        </div>
+      }
+      footer={
+        <div className="flex items-center gap-2">
+          {editing && <DeleteFooterButton confirmDelete={confirmDelete} onFirstClick={onDeleteClick} onConfirm={onDeleteConfirm} />}
+          <button type="button" onClick={onClose} className="ml-auto rounded border border-navy-100 px-3 py-1.5 text-sm text-navy-950/70">닫기</button>
+          <button type="button" onClick={onSave} disabled={pending} className="rounded bg-navy-900 px-3 py-1.5 text-sm text-white">
+            {editing ? "수정 저장" : "등록"}
+          </button>
+        </div>
+      }
+    >
       <div>
         <FieldLabel>프로젝트명</FieldLabel>
         <TextInput placeholder="예) 무선충전 발열 측정 지그 표준화" value={draft.name} onChange={(e) => onChange({ name: e.target.value })} />
@@ -471,14 +527,6 @@ export function SubProjectForm({
       </div>
 
       {error && <p className="m-0 text-[13px] text-red-600">{error}</p>}
-
-      <div className="flex items-center gap-2">
-        {editing && <DeleteFooterButton confirmDelete={confirmDelete} onFirstClick={onDeleteClick} onConfirm={onDeleteConfirm} />}
-        <button type="button" onClick={onClose} className="ml-auto rounded border border-navy-100 px-3 py-1.5 text-sm text-navy-950/70">닫기</button>
-        <button type="button" onClick={onSave} disabled={pending} className="rounded bg-navy-900 px-3 py-1.5 text-sm text-white">
-          {editing ? "수정 저장" : "등록"}
-        </button>
-      </div>
     </DrawerShell>
   );
 }
@@ -564,12 +612,25 @@ export function CommonTaskForm({
 }) {
   const [calendarOpen, setCalendarOpen] = useState(false);
   return (
-    <DrawerShell width={480} onClose={onClose}>
-      <div className="flex items-center justify-between">
-        <div className="text-base font-semibold text-navy-950">{editing ? "공통 업무 수정" : "공통 업무 등록"}</div>
-        <button type="button" onClick={onClose} className="text-neutral-400 hover:text-navy-950">×</button>
-      </div>
-
+    <DrawerShell
+      width={480}
+      onClose={onClose}
+      header={
+        <div className="flex items-center justify-between">
+          <div className="text-base font-semibold text-navy-950">{editing ? "공통 업무 수정" : "공통 업무 등록"}</div>
+          <button type="button" onClick={onClose} className="text-neutral-400 hover:text-navy-950">×</button>
+        </div>
+      }
+      footer={
+        <div className="flex items-center gap-2">
+          {editing && <DeleteFooterButton confirmDelete={confirmDelete} onFirstClick={onDeleteClick} onConfirm={onDeleteConfirm} />}
+          <button type="button" onClick={onClose} className="ml-auto rounded border border-navy-100 px-3 py-1.5 text-sm text-navy-950/70">닫기</button>
+          <button type="button" onClick={onSave} disabled={pending} className="rounded bg-navy-900 px-3 py-1.5 text-sm text-white">
+            {editing ? "수정 저장" : "등록"}
+          </button>
+        </div>
+      }
+    >
       <div>
         <FieldLabel>업무명</FieldLabel>
         <TextInput placeholder="예) 보호필름 경도·투과율 측정" value={draft.name} onChange={(e) => onChange({ name: e.target.value })} />
@@ -641,14 +702,6 @@ export function CommonTaskForm({
       <p className="m-0 text-[12px] text-neutral-400">대상 월 구간의 각 월에 이 업무가 표시됩니다. 월별 완료 여부는 현황판에서 직접 체크합니다.</p>
 
       {error && <p className="m-0 text-[13px] text-red-600">{error}</p>}
-
-      <div className="flex items-center gap-2">
-        {editing && <DeleteFooterButton confirmDelete={confirmDelete} onFirstClick={onDeleteClick} onConfirm={onDeleteConfirm} />}
-        <button type="button" onClick={onClose} className="ml-auto rounded border border-navy-100 px-3 py-1.5 text-sm text-navy-950/70">닫기</button>
-        <button type="button" onClick={onSave} disabled={pending} className="rounded bg-navy-900 px-3 py-1.5 text-sm text-white">
-          {editing ? "수정 저장" : "등록"}
-        </button>
-      </div>
     </DrawerShell>
   );
 }
