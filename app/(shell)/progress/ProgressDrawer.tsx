@@ -18,6 +18,15 @@ import { SegmentedDateInput, SegmentedMonthInput } from "./DateSegments";
  * 진행 현황 — 업무 등록/수정 Drawer. ZIP §8의 3단계(유형 선택 → 유형별
  * 폼)를 그대로 따른다. 중앙 모달(변수명은 drawer지만 실제로는 Side Panel이
  * 아니라 중앙 모달 — ZIP 리포트 §8 그대로)이며, 반투명 배경 클릭으로 닫힌다.
+ *
+ * 확대 배율은 별도로 걸지 않는다 — `position: fixed`는 위치 계산의
+ * containing block만 viewport로 바꿀 뿐, 렌더링 스케일(zoom)은 DOM
+ * 트리를 따라 그대로 상속된다. 이 Drawer가 (React Portal 없이) 이미
+ * zoom이 걸린 ProgressPageShell 안에 중첩 렌더링되므로 여기 또 zoom을
+ * 걸면 1.5×1.5=2.25배로 곱배가 된다(실측으로 확인 — 걸었다가 모달 폭이
+ * 840px이 아니라 1260px로 나와서 알아냄). ProgressPageShell 바깥(예:
+ * Portal)으로 옮기게 되면 그때는 여기에도 PROGRESS_UI_SCALE을 다시
+ * 걸어야 한다.
  */
 export function DrawerShell({ children, width = 480, onClose }: { children: React.ReactNode; width?: number; onClose: () => void }) {
   return (

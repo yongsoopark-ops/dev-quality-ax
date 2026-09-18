@@ -629,7 +629,7 @@ export function ProgressClient({
           {commonOwnerGroups.length === 0 ? (
             <div className="rounded-xl border border-dashed border-[#d5dbe5] bg-white px-[26px] py-[26px] text-center text-[12.5px] text-[#8a91a3]">{monthLabel(month)}에 계획된 공통 업무가 없습니다.</div>
           ) : (
-            <div className="grid grid-cols-[repeat(auto-fill,minmax(330px,1fr))] gap-2">
+            <div className="grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-2">
               {commonOwnerGroups.map((g) => (
                 <CommonOwnerCard
                   key={g.ownerId}

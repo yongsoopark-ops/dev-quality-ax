@@ -32,9 +32,10 @@ export const DESIGN_STATUS: Record<ProgressStatus, DesignColorSet> = {
 
 /** 공통 업무 항목 상태(ZIP IT — ST와 "예정" 회색이 미묘하게 다름, 그 미묘한
  * 차이는 유지하되 톤은 AX neutral 스케일 안에서 고른다). 공통 업무는
- * WAITING/DONE 2상태만 쓴다 — 서브 세부 목표의 3상태(DESIGN_SUB_ITEM_STATUS)
- * 와 타입 레벨에서부터 분리해, 공통 쪽에 실수로 IN_PROGRESS가 섞여 들어가지
- * 않게 한다.
+ * WAITING/DONE 2상태만 쓴다 — 서브 세부 목표 마커(DESIGN_SUB_ITEM_MARKER)와
+ * 타입 레벨에서부터 분리해, 공통 쪽에 실수로 IN_PROGRESS가 섞여 들어가지
+ * 않게 한다. 공통 업무 항목은 원형 마커가 아니라 텍스트 pill 버튼("완료"/
+ * "예정")이라 마커 글리프 크기 문제 자체가 해당하지 않는다.
  *  - WAITING → Tailwind neutral-400/neutral-50/neutral-200(PLANNED의
  *    neutral-500보다 한 단계 옅은 회색 — 원본의 "미묘하게 다름"을 보존)
  *  - DONE    → DESIGN_STATUS.DONE과 동일한 green-700/green-50/green-200
@@ -44,16 +45,20 @@ export const DESIGN_ITEM_STATUS: Record<Extract<ProgressItemStatus, "WAITING" | 
   DONE: { color: "#15803d", bg: "#f0fdf4", border: "#bbf7d0", marker: "●" },
 };
 
-/** 서브 세부 목표 전용 3상태(예정/진행중/완료) — 공통 업무는 여전히
- * DESIGN_ITEM_STATUS(2상태)만 쓴다. 예정/완료 값은 위와 동일하게 유지하고
- * 진행중만 새로 추가한다.
- *  - IN_PROGRESS → Tailwind amber-700/amber-50/amber-200(요청한
- *    "#b0730f 수준의 amber-700" — 기존에 이미 쓰던 amber 토큰(예: 보류/개선
- *    차수 배지)과 동일 값으로 맞춰 새 hex를 만들지 않았다) */
-export const DESIGN_SUB_ITEM_STATUS: Record<ProgressItemStatus, DesignColorSet & { marker: string }> = {
-  WAITING: { color: "#a3a3a3", bg: "#fafafa", border: "#e5e5e5", marker: "○" },
-  IN_PROGRESS: { color: "#b45309", bg: "#fffbeb", border: "#fde68a", marker: "●" },
-  DONE: { color: "#15803d", bg: "#f0fdf4", border: "#bbf7d0", marker: "●" },
+/** 서브 세부 목표 마커 — 텍스트 글리프(○/●)를 CSS 원으로 교체했다. ○와 ●는
+ * 폰트마다 글리프 자체의 실제 지름이 달라서(font-size를 맞춰도 렌더 크기가
+ * 어긋남) 셋 다 같은 11×11px 원으로 그리고 예정만 흰 배경(테두리만),
+ * 진행중·완료는 테두리와 같은 색으로 채운다 — 세 상태의 실제 렌더
+ * width/height가 완전히 같아야 한다(getBoundingClientRect로 검증).
+ *  - WAITING     → Tailwind neutral-300(#d4d4d4) 테두리 + 흰 배경
+ *  - IN_PROGRESS → Tailwind amber-700(#b45309) 테두리+배경(기존 보류/개선
+ *    차수 배지와 동일 토큰, 새 hex를 만들지 않았다)
+ *  - DONE        → DESIGN_ITEM_STATUS.DONE과 동일한 green-700(#15803d)
+ *    테두리+배경(완료=초록 의미를 정규/서브/공통 전부 동일하게 유지) */
+export const DESIGN_SUB_ITEM_MARKER: Record<ProgressItemStatus, { border: string; background: string }> = {
+  WAITING: { border: "#d4d4d4", background: "#ffffff" },
+  IN_PROGRESS: { border: "#b45309", background: "#b45309" },
+  DONE: { border: "#15803d", background: "#15803d" },
 };
 
 /** 서브 세부 목표 "진행중" 행 전체 강조 — 배지 배경(amber-50, #fffbeb)을

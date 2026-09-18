@@ -14,7 +14,7 @@ import {
   DESIGN_STATUS,
   DESIGN_SUB_BAR_COLOR,
   DESIGN_SUB_ITEM_INPROGRESS_ROW,
-  DESIGN_SUB_ITEM_STATUS,
+  DESIGN_SUB_ITEM_MARKER,
   DESIGN_SUB_PCT_TEXT_COLOR,
 } from "@/lib/progress/designTokens";
 import { PROGRESS_STATUS_LABEL, repeatDayLabel } from "@/lib/progress/constants";
@@ -282,7 +282,7 @@ export function SubProjectCard({
           const inProgress = it.status === "IN_PROGRESS";
           const isCur = !done && it.id === firstIncompleteId;
           const idx = project.items.findIndex((x) => x.id === it.id);
-          const k = DESIGN_SUB_ITEM_STATUS[it.status];
+          const marker = DESIGN_SUB_ITEM_MARKER[it.status];
           return (
             <button
               key={it.id}
@@ -292,7 +292,10 @@ export function SubProjectCard({
               className="flex w-full items-center gap-2 rounded-[7px] border px-2 py-[5px] text-left hover:bg-[#f7f9fc]"
               style={inProgress ? { borderColor: DESIGN_SUB_ITEM_INPROGRESS_ROW.border, background: DESIGN_SUB_ITEM_INPROGRESS_ROW.background } : { borderColor: "transparent" }}
             >
-              <span className="w-[13px] shrink-0 text-center text-[11.5px]" style={{ color: k.color }}>{k.marker}</span>
+              <span
+                className="box-border shrink-0 rounded-full"
+                style={{ width: 11, height: 11, border: `1.5px solid ${marker.border}`, background: marker.background }}
+              />
               <span className="shrink-0 text-[11px] tabular-nums text-[#9aa1b1]">{String(idx + 1).padStart(2, "0")}</span>
               <span
                 className="min-w-0 flex-1 truncate text-[12.5px]"
