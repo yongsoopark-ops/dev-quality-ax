@@ -126,7 +126,7 @@ export function RegularProjectCard({
             type="button"
             title="클릭하면 수정"
             onClick={onEdit}
-            className="min-w-0 flex-1 truncate text-left text-[14px] font-semibold text-[#1b1f2b] hover:text-navy-700 hover:underline"
+            className="min-w-0 shrink truncate text-left text-[14px] font-semibold text-[#1b1f2b] hover:text-navy-700 hover:underline"
             style={{ letterSpacing: "-0.01em" }}
           >
             {project.name}
@@ -256,12 +256,12 @@ export function SubProjectCard({
         <span className="ml-auto whitespace-nowrap text-[11.5px] text-[#6f778a]">이번 분기 {doneThisQ}/{thisQItems.length} 완료</span>
       </div>
 
-      <div className="flex flex-wrap items-center gap-2">
-        <button type="button" title="클릭하면 수정" onClick={onEdit} className="text-left text-[14px] font-semibold text-[#1b1f2b] hover:text-navy-700 hover:underline" style={{ letterSpacing: "-0.01em" }}>
+      <div className="flex min-w-0 items-center gap-2">
+        <button type="button" title="클릭하면 수정" onClick={onEdit} className="min-w-0 shrink truncate text-left text-[14px] font-semibold text-[#1b1f2b] hover:text-navy-700 hover:underline" style={{ letterSpacing: "-0.01em" }}>
           {project.name}
         </button>
         {project.sheetUrl && (
-          <a href={project.sheetUrl} target="_blank" rel="noreferrer" title="산출물 시트 열기" className="whitespace-nowrap rounded-md border border-navy-100 bg-navy-50 px-2 py-0.5 text-[11px] text-navy-700 no-underline">
+          <a href={project.sheetUrl} target="_blank" rel="noreferrer" title="산출물 시트 열기" className="shrink-0 whitespace-nowrap rounded-md border border-navy-100 bg-navy-50 px-2 py-0.5 text-[11px] text-navy-700 no-underline">
             산출물 ↗
           </a>
         )}
