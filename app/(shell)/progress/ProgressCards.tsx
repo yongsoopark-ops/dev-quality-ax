@@ -119,18 +119,18 @@ export function RegularProjectCard({
     <article className="flex flex-wrap items-center gap-x-[18px] gap-y-3 rounded-xl border border-[#dde2ea] bg-white px-[15px] py-3">
       {/* 왼쪽: 이름/D-day, 담당자/상태 */}
       <div className="flex min-w-0 flex-col gap-[5px]" style={{ flex: "1 1 240px" }}>
-        <div className="flex min-w-0 flex-wrap items-center gap-2">
+        <div className="flex min-w-0 items-center gap-2">
           <button
             type="button"
             title="클릭하면 수정"
             onClick={onEdit}
-            className="min-w-0 truncate text-left text-[14px] font-semibold text-[#1b1f2b] hover:text-navy-700 hover:underline"
+            className="min-w-0 flex-1 truncate text-left text-[14px] font-semibold text-[#1b1f2b] hover:text-navy-700 hover:underline"
             style={{ letterSpacing: "-0.01em" }}
           >
             {project.name}
           </button>
           {project.artifactUrl && (
-            <a href={project.artifactUrl} target="_blank" rel="noreferrer" title="산출물 링크 열기" className="whitespace-nowrap rounded-md border border-navy-100 bg-navy-50 px-2 py-0.5 text-[11px] text-navy-700 no-underline">
+            <a href={project.artifactUrl} target="_blank" rel="noreferrer" title="산출물 링크 열기" className="shrink-0 whitespace-nowrap rounded-md border border-navy-100 bg-navy-50 px-2 py-0.5 text-[11px] text-navy-700 no-underline">
               산출물 ↗
             </a>
           )}
@@ -161,10 +161,10 @@ export function RegularProjectCard({
             <>
               <span className="shrink-0 font-semibold text-navy-700">{stageCode}</span>
               <span className="shrink-0 text-[#cfd5e0]">·</span>
-              <span className="min-w-0 truncate text-[#4b5364]">{stageName}</span>
+              <span className="min-w-0 flex-1 truncate text-[#4b5364]">{stageName}</span>
             </>
           ) : (
-            <span className="min-w-0 truncate text-[#4b5364]">{stageName}</span>
+            <span className="min-w-0 flex-1 truncate text-[#4b5364]">{stageName}</span>
           )}
           {sample && <span title={sample.tooltip} className={smallBadgeClass} style={toneStyle(sample.tone)}>{sample.text}</span>}
           {review && <span title={review.tooltip} className={smallBadgeClass} style={toneStyle(review.tone)}>{review.text}</span>}

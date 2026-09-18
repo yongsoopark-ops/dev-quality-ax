@@ -111,6 +111,16 @@ export function isCommonTaskDone(row: { items: { status: ProgressCommonTaskRow["
   return row.items.length > 0 && row.items.every((it) => it.status === "DONE");
 }
 
+/** 공통 업무가 지금 보고 있는 월에 항목을 갖고 있는지 — "업무 유형" 필터
+ * 칩의 공통 건수가 서브(isSubProjectDone과 quarter 일치 조건 조합)와 같은
+ * 기준으로 선택된 기간에 반응하도록 분리한 순수 함수. */
+export function isCommonTaskActiveInMonth(
+  row: { items: { monthYear: number; monthNum: number }[] },
+  month: { year: number; month: number },
+): boolean {
+  return row.items.some((it) => it.monthYear === month.year && it.monthNum === month.month);
+}
+
 /** 반복 업무 기준일 경과 강조(핸드오프 §4.10 repeatOverdue) — 실제
  * 오늘이 속한 달의 항목이고, 오늘이 기준일을 지났을 때만 true. 말일은 그
  * 달의 마지막 날로 계산한다. */

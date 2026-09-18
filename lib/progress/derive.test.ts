@@ -3,6 +3,7 @@ import {
   currentStageIndex,
   currentStageText,
   effectiveRounds,
+  isCommonTaskActiveInMonth,
   isCommonTaskDone,
   isRepeatDueDayPassed,
   isSubProjectDone,
@@ -111,6 +112,26 @@ describe("isSubProjectDone / isCommonTaskDone", () => {
     expect(isCommonTaskDone({ items: [] })).toBe(false);
     expect(isCommonTaskDone({ items: [{ status: "DONE" }] })).toBe(true);
     expect(isCommonTaskDone({ items: [{ status: "DONE" }, { status: "WAITING" }] })).toBe(false);
+  });
+});
+
+describe("isCommonTaskActiveInMonth — '업무 유형' 필터 칩의 공통 건수가 선택 월에 반응하는 근거", () => {
+  it("보고 있는 월에 항목이 있으면 true", () => {
+    expect(isCommonTaskActiveInMonth({ items: [{ monthYear: 2026, monthNum: 9 }] }, { year: 2026, month: 9 })).toBe(true);
+  });
+  it("보고 있는 월에 항목이 없으면 false(다른 달 항목만 있어도)", () => {
+    expect(isCommonTaskActiveInMonth({ items: [{ monthYear: 2026, monthNum: 8 }] }, { year: 2026, month: 9 })).toBe(false);
+  });
+  it("항목이 아예 없으면 false", () => {
+    expect(isCommonTaskActiveInMonth({ items: [] }, { year: 2026, month: 9 })).toBe(false);
+  });
+  it("여러 달에 걸친 항목 중 하나라도 보고 있는 월과 일치하면 true", () => {
+    expect(
+      isCommonTaskActiveInMonth(
+        { items: [{ monthYear: 2026, monthNum: 8 }, { monthYear: 2026, monthNum: 9 }, { monthYear: 2026, monthNum: 10 }] },
+        { year: 2026, month: 9 },
+      ),
+    ).toBe(true);
   });
 });
 

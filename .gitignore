@@ -12,3 +12,7 @@ next-env.d.ts
 /prisma/*.db
 /prisma/*.db-journal
 /prisma/backup/
+
+# next dev가 자동 생성하는 프레임워크 안내 파일(node_modules/next/dist/server/lib/generate-agent-files.js) — 매번 재생성되므로 추적하지 않는다
+/AGENTS.md
+/CLAUDE.md

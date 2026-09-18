@@ -19,7 +19,7 @@ import {
   type CalendarMonth,
   type FiscalQuarter,
 } from "@/lib/progress/date";
-import { isCommonTaskDone, isSubProjectDone } from "@/lib/progress/derive";
+import { isCommonTaskActiveInMonth, isCommonTaskDone, isSubProjectDone } from "@/lib/progress/derive";
 import type { ProgressAssigneeOption, ProgressCommonTaskRow, ProgressRegularProjectRow, ProgressSubProjectRow } from "@/lib/progress/types";
 import { CommonOwnerCard, RegularProjectCard, SubProjectCard } from "./ProgressCards";
 import { CommonTaskForm, RegularProjectForm, SubProjectForm, TypePickStep, type CommonDraft, type RegularDraft, type SubDraft } from "./ProgressDrawer";
@@ -162,7 +162,7 @@ export function ProgressClient({
 
   const activeRegular = regularProjects.filter((p) => p.status !== "DONE" && ownerOk(p.ownerId));
   const activeSub = subProjects.filter((p) => !isSubProjectDone(p) && ownerOk(p.ownerId) && p.items.some((it) => it.quarterYear === quarter.year && it.quarterNum === quarter.q));
-  const activeCommon = commonTasks.filter((t) => !isCommonTaskDone(t) && ownerOk(t.ownerId));
+  const activeCommon = commonTasks.filter((t) => !isCommonTaskDone(t) && ownerOk(t.ownerId) && isCommonTaskActiveInMonth(t, month));
 
   const typeCounts: Record<ProgressTypeFilter, number> = {
     전체: activeRegular.length + activeSub.length + activeCommon.length,
