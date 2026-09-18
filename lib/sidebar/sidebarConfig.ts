@@ -5,6 +5,7 @@ export type SidebarMenuId =
   | "CHAT"
   | "SCHEDULE"
   | "MEETING_MINUTES"
+  | "PROGRESS_DASHBOARD"
   | "FACILITY_RESERVATION"
   | "FACILITY_CALENDAR"
   | "FACILITY_STATS"
@@ -96,6 +97,19 @@ export const SIDEBAR_MENUS: SidebarMenuDef[] = [
     fixed: false,
     defaultGroupId: "PROJECT_MANAGEMENT",
     defaultOrder: 1,
+  },
+  {
+    // 진행 현황(Progress Dashboard) — 정규/서브 프로젝트 + 공통 업무 진행
+    // 현황판(ZIP "진행 현황 관리판 v2"). 일정 관리/회의록과 같은 "프로젝트
+    // 관리" Group에 둔다(요청: "기존 프로젝트 관리 영역에 실제 메뉴로
+    // 추가"). requiredRole은 null — 파트원 누구나 등록/조회 가능.
+    id: "PROGRESS_DASHBOARD",
+    label: "진행 현황",
+    href: "/progress",
+    requiredRole: null,
+    fixed: false,
+    defaultGroupId: "PROJECT_MANAGEMENT",
+    defaultOrder: 2,
   },
   {
     // 설비 관리(Equipment Management) — 개발품질 파트의 시험 설비 예약/사용
