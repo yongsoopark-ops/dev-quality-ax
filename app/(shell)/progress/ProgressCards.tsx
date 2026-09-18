@@ -7,7 +7,6 @@ import {
   DESIGN_COMMON_BAR_COLOR,
   DESIGN_COMMON_PCT_TEXT_COLOR,
   DESIGN_DDAY_TONE,
-  DESIGN_ITEM_STATUS,
   DESIGN_QUARTER_BADGE,
   DESIGN_REPEAT_TAG,
   DESIGN_REPEAT_TAG_OVERDUE,
@@ -21,6 +20,7 @@ import { PROGRESS_STATUS_LABEL, repeatDayLabel } from "@/lib/progress/constants"
 import { currentStageText, effectiveRounds, isRepeatDueDayPassed, pw8ReviewBadge, releaseDday, sampleDday, subProjectItemSpan, type BadgeTone } from "@/lib/progress/derive";
 import { compareQuarter, currentFiscalQuarter, quarterLabel, type FiscalQuarter } from "@/lib/progress/date";
 import type { ProgressCommonTaskItemRow, ProgressRegularProjectRow, ProgressSubProjectRow } from "@/lib/progress/types";
+import { PROGRESS_UI_SCALE } from "./ProgressPageShell";
 import type { ProgressStatus } from "@/app/generated/prisma/enums";
 import { StageRail, type StageMark } from "./StageRail";
 
@@ -90,6 +90,34 @@ function OwnerInline({ name, size = 18 }: { name: string; size?: number }) {
 
 // ── 정규 프로젝트 — 한 행(row) 구조(Design §4) ─────────────────────────
 
+/** ①(제목)·②(PW 레일)·③(일정) 세 블록의 폭/간격 목표 — "실제로 보이는(줌
+ * 적용 후) 값" 기준이다. PROGRESS_MAX_WIDTH_TARGET과 같은 이유로 소스 px를
+ * 고정하지 않고 PROGRESS_UI_SCALE로 나눠서 구한다(배율이 바뀌어도 실제
+ * 렌더 값은 그대로 유지). ③의 margin-left는 article 자체의
+ * gap-x-[18px](실제 렌더 ARTICLE_GAP_SOURCE_PX×PROGRESS_UI_SCALE)에 더해져
+ * ②-③ 사이 실제 총 간격이 ZONE3_MARGIN_LEFT_TARGET_PX가 되도록 역산한다
+ * — article의 gap을 무시하고 margin만 목표값으로 두면 실제 간격이 그만큼
+ * 더 벌어진다.
+ *
+ * zone2(PW 레일)는 ①·③처럼 고정 폭을 갖지 않는다 — flex: 1 1 0px로 ①·③이
+ * 가져가고 남는 폭을 항상 전부 흡수한다(캡 없음). StageRail은 PW1~8을
+ * grid-cols-8로 이 폭에 꽉 채워 그린다(칸 폭 = (zone2 폭 - gap 7개)/8).
+ * 한때 여기에 max-width 캡(600px)을 걸었었는데, 카드 폭이 커질수록(예:
+ * 2560px에서 카드 자체가 2230px) 캡에 막힌 zone2가 남는 폭을 못 가져가
+ * zone3 오른쪽에 수백~1000px대 빈 공간이 남는 문제가 있었다 — 캡을
+ * 완전히 제거해 항상 남는 폭 전부를 zone2가 흡수하도록 고쳤다. 초광폭
+ * 화면에서 막대가 과도해지는 것이 걱정되면 zone2에 캡을 다시 걸지 말고
+ * ProgressPageShell의 PROGRESS_MAX_WIDTH_TARGET(카드 전체 폭의 유일한
+ * 제한 지점)을 낮출 것 — zone2에 숫자 폭을 넣으면 화면 폭이 바뀔 때마다
+ * 그 숫자가 다시 안 맞아지는 문제가 반복된다.
+ * flex-basis를 0으로 둬서(①·③은 각자 고정 폭을 이미 차지한 뒤) 줄바꿈
+ * 여부는 항상 zone2가 최소 폭(0)인 상태로 판정되므로, 1440px 같은 좁은
+ * 폭에서도 세 블록이 항상 한 줄을 유지한다. */
+const ARTICLE_GAP_SOURCE_PX = 18; // article의 gap-x-[18px]와 반드시 일치해야 함
+const ZONE1_WIDTH_TARGET_PX = 240;
+const ZONE3_MARGIN_LEFT_TARGET_PX = 36;
+const ZONE3_DATE_GAP_TARGET_PX = 28;
+
 export function RegularProjectCard({
   project,
   pending,
@@ -119,8 +147,11 @@ export function RegularProjectCard({
 
   return (
     <article className="flex flex-wrap items-center gap-x-[18px] gap-y-3 rounded-xl border border-[#dde2ea] bg-white px-[15px] py-3">
-      {/* 왼쪽: 이름/D-day, 담당자/상태 */}
-      <div className="flex min-w-0 flex-col gap-[5px]" style={{ flex: "1 1 240px" }}>
+      {/* 왼쪽: 이름/D-day, 담당자/상태 — flex-grow 제거, 고정 basis(240px)만
+          차지하고 남는 폭은 흡수하지 않는다(카드 우측 여백으로 남김). 긴
+          제목은 basis 안에서 truncate로 잘린다(아래 title 버튼의
+          min-w-0 shrink truncate). */}
+      <div className="flex min-w-0 flex-col gap-[5px]" style={{ flex: `0 1 ${ZONE1_WIDTH_TARGET_PX / PROGRESS_UI_SCALE}px` }}>
         <div className="flex min-w-0 items-center gap-2">
           <button
             type="button"
@@ -144,8 +175,9 @@ export function RegularProjectCard({
         </div>
       </div>
 
-      {/* 가운데: PW 레일 + 현재 단계 문구 */}
-      <div className="flex min-w-0 flex-col gap-1.5" style={{ flex: "2 1 300px", maxWidth: 600 }}>
+      {/* 가운데: PW 레일 + 현재 단계 문구 — ①·③이 가져가고 남는 폭을 이
+          블록이 항상 전부 흡수한다(flex-grow 1, basis 0, 캡 없음). */}
+      <div className="flex min-w-0 flex-col gap-1.5" style={{ flex: "1 1 0px" }}>
         <StageRail
           runIndexes={project.stageRunIndexes}
           skipIndexes={project.stageSkipIndexes}
@@ -182,17 +214,29 @@ export function RegularProjectCard({
         </div>
       </div>
 
-      {/* 오른쪽: Kick Off / 목표 출시 / 실제 출시 */}
-      <div className="grid min-w-0 grid-cols-3 gap-[10px]" style={{ flex: "1 1 260px" }}>
-        <div className="min-w-0">
+      {/* 오른쪽: Kick Off / 목표 출시 / 실제 출시 — ①·② 모두 flex-grow를
+          없애 남는 폭을 흡수하지 않으므로(카드 우측 여백으로 남음), ③도
+          flex: 0 0 auto로 내용 폭만 차지한다. 세 날짜 사이는 grid의 균등
+          분할 대신 flex + gap으로 붙어 보이게 한다. 각 항목은 날짜 포맷
+          (YYYY.MM.DD) 기준 고정 폭(64px)을 둬 값이 "—"여도 카드마다
+          라벨·날짜 정렬이 흔들리지 않는다. */}
+      <div
+        className="flex items-start"
+        style={{
+          flex: "0 0 auto",
+          marginLeft: ZONE3_MARGIN_LEFT_TARGET_PX / PROGRESS_UI_SCALE - ARTICLE_GAP_SOURCE_PX,
+          gap: `${ZONE3_DATE_GAP_TARGET_PX / PROGRESS_UI_SCALE}px`,
+        }}
+      >
+        <div style={{ width: 64 }}>
           <div className="whitespace-nowrap text-[10.5px] text-[#9aa1b1]" style={{ letterSpacing: "0.02em" }}>Kick Off</div>
           <div className="whitespace-nowrap text-[12.5px] tabular-nums text-[#4b5364]">{project.kickoffDate ? project.kickoffDate.replaceAll("-", ".") : "—"}</div>
         </div>
-        <div className="min-w-0">
+        <div style={{ width: 64 }}>
           <div className="whitespace-nowrap text-[10.5px] text-[#9aa1b1]" style={{ letterSpacing: "0.02em" }}>목표 출시</div>
           <div className="whitespace-nowrap text-[12.5px] tabular-nums text-[#1b1f2b]">{project.targetReleaseDate ? project.targetReleaseDate.replaceAll("-", ".") : "—"}</div>
         </div>
-        <div className="min-w-0">
+        <div style={{ width: 64 }}>
           <div className="whitespace-nowrap text-[10.5px] text-[#9aa1b1]" style={{ letterSpacing: "0.02em" }}>실제 출시</div>
           <div
             className="whitespace-nowrap text-[12.5px] tabular-nums"
@@ -367,9 +411,7 @@ export function CommonOwnerCard({
       <div className="flex flex-col gap-0.5">
         {items.map((it) => {
           const done = it.status === "DONE";
-          // 공통 업무 항목은 항상 WAITING|DONE만 쓴다(서브 전용 IN_PROGRESS는
-          // 여기 오지 않는다) — DESIGN_ITEM_STATUS는 그 2상태만 다룬다.
-          const k = DESIGN_ITEM_STATUS[it.status as "WAITING" | "DONE"];
+          const marker = DESIGN_SUB_ITEM_MARKER[it.status];
           const canCarry = !done;
           const overdue = it.repeat && !done && isRepeatDueDayPassed(it.repeatDay, month);
           const repeatTagTone = overdue ? DESIGN_REPEAT_TAG_OVERDUE : DESIGN_REPEAT_TAG;
@@ -377,12 +419,21 @@ export function CommonOwnerCard({
             <div key={it.itemId} className="flex items-center gap-2 rounded-md px-[7px] py-[5px] hover:bg-[#f7f9fc]">
               <button
                 type="button"
-                title="클릭하면 수정"
-                onClick={() => onEditTask(it.taskId)}
-                className="min-w-0 flex-1 truncate text-left text-[12.5px] hover:text-navy-700 hover:underline"
-                style={{ color: done ? "#8a91a3" : "#1b1f2b", textDecoration: done ? "line-through" : "none" }}
+                disabled={pending}
+                title={done ? "예정으로 되돌리기" : "완료로 전환"}
+                onClick={() => onToggleItem(it.itemId)}
+                className="flex min-w-0 flex-1 items-center gap-2 text-left"
               >
-                {it.taskName}
+                <span
+                  className="box-border shrink-0 rounded-full"
+                  style={{ width: 11, height: 11, border: `1.5px solid ${marker.border}`, background: marker.background }}
+                />
+                <span
+                  className="min-w-0 flex-1 truncate text-[12.5px]"
+                  style={{ color: done ? "#8a91a3" : "#1b1f2b", textDecoration: done ? "line-through" : "none" }}
+                >
+                  {it.taskName}
+                </span>
               </button>
               {it.repeat && (
                 <span
@@ -404,13 +455,11 @@ export function CommonOwnerCard({
               )}
               <button
                 type="button"
-                disabled={pending}
-                title={done ? "예정으로 되돌리기" : "완료로 전환"}
-                onClick={() => onToggleItem(it.itemId)}
-                className="shrink-0 whitespace-nowrap rounded-full px-[9px] py-0.5 text-[11px] font-semibold"
-                style={{ color: k.color, background: k.bg, border: `1px solid ${k.border}` }}
+                title="클릭하면 수정"
+                onClick={() => onEditTask(it.taskId)}
+                className="shrink-0 whitespace-nowrap text-[10.5px] text-neutral-300 hover:text-navy-700"
               >
-                {k.marker === "●" ? "완료" : "예정"}
+                수정
               </button>
               {canCarry && (
                 <button
