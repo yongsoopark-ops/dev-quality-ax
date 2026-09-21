@@ -115,7 +115,18 @@ function OwnerInline({ name, size = 18 }: { name: string; size?: number }) {
  * 여부는 항상 zone2가 최소 폭(0)인 상태로 판정되므로, 1440px 같은 좁은
  * 폭에서도 세 블록이 항상 한 줄을 유지한다. */
 const ARTICLE_GAP_SOURCE_PX = 18; // article의 gap-x-[18px]와 반드시 일치해야 함
-const ZONE1_WIDTH_TARGET_PX = 240;
+// 300(기존 240에서 +60) — 프로젝트명이 D-day/산출물 배지와 한 줄에서
+// 경쟁하다 10자 미만에서 잘리는 문제(예: "스테인리스 가습기" → "스테인리...")를
+// 고치기 위해 넓혔다. zone2(PW 레일)는 flex:1로 남는 폭을 항상 전부
+// 흡수하므로, 여기서 zone1을 넓히면 zone2가 그만큼 자동으로 줄어 카드
+// 전체 폭은 그대로 유지된다(비율 재조정만 발생, 총 폭 불변).
+const ZONE1_WIDTH_TARGET_PX = 300;
+// 이름 버튼의 최소 폭 — 한글 전각 기준 10자(약 140px)가 D-day/산출물
+// 배지와 같은 줄에 있어도 잘리지 않도록 보장한다. 이 폭을 넘어서기
+// 시작하면(짧은 이름 + 배지가 이미 zone1 안에 다 들어가는 경우) 기존과
+// 동일하게 보이고, 넘치는 경우에만 아래 NAME_ROW_WRAP로 배지가 다음 줄로
+// 내려가 이름 폭을 침범하지 않는다.
+const NAME_MIN_WIDTH_PX = 140;
 const ZONE3_MARGIN_LEFT_TARGET_PX = 36;
 const ZONE3_DATE_GAP_TARGET_PX = 28;
 
@@ -153,13 +164,13 @@ export function RegularProjectCard({
           제목은 basis 안에서 truncate로 잘린다(아래 title 버튼의
           min-w-0 shrink truncate). */}
       <div className="flex min-w-0 flex-col gap-[5px]" style={{ flex: `0 1 ${ZONE1_WIDTH_TARGET_PX / PROGRESS_UI_SCALE}px` }}>
-        <div className="flex min-w-0 items-center gap-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
           <button
             type="button"
             title="클릭하면 수정"
             onClick={onEdit}
             className="min-w-0 shrink truncate text-left text-[14px] font-semibold text-[#1b1f2b] hover:text-navy-700 hover:underline"
-            style={{ letterSpacing: "-0.01em" }}
+            style={{ letterSpacing: "-0.01em", minWidth: NAME_MIN_WIDTH_PX / PROGRESS_UI_SCALE }}
           >
             {project.name}
           </button>
@@ -276,6 +287,12 @@ export function SubProjectCard({
   // 항목별 분기 선택 드롭다운 — 한 카드 안에서 한 번에 하나만 열린다
   // (StageRail의 openIndex와 동일한 패턴).
   const [openQuarterItemId, setOpenQuarterItemId] = useState<string | null>(null);
+  // 완료 항목 접기 — 완료 항목이 전부 나열되면 카드가 세로로 길게 늘어지는
+  // 문제가 있어, 기본은 접어두고 필요할 때만 펼친다. 순수 화면 상태라
+  // API를 부르지 않고, 진행률(doneTotal/total/pct)·"이번 분기 N/M 완료"
+  // 요약은 접힘 여부와 무관하게 항상 thisQItems/project.items 전체 기준으로
+  // 계산해야 하므로 아래 filter는 렌더링용 리스트(visibleItems)에만 적용한다.
+  const [showDoneItems, setShowDoneItems] = useState(false);
   const projectQuarters = quartersBetween(
     { year: project.quarterStartYear, q: project.quarterStartQ as 1 | 2 | 3 | 4 },
     { year: project.quarterEndYear, q: project.quarterEndQ as 1 | 2 | 3 | 4 },
@@ -334,7 +351,7 @@ export function SubProjectCard({
 
       <div className="flex flex-col gap-0.5">
         {thisQItems.length === 0 && <div className="rounded-lg border border-dashed border-[#d5dbe5] px-3 py-2 text-[12.5px] text-[#8a91a3]">{quarterLabel(quarter)}에 진행 예정인 세부 목표가 없습니다.</div>}
-        {thisQItems.map((it) => {
+        {(showDoneItems ? thisQItems : thisQItems.filter((it) => it.status !== "DONE")).map((it) => {
           const done = it.status === "DONE";
           const inProgress = it.status === "IN_PROGRESS";
           const isCur = !done && it.id === firstIncompleteId;
@@ -409,6 +426,16 @@ export function SubProjectCard({
           );
         })}
       </div>
+      {doneThisQ > 0 && (
+        <button
+          type="button"
+          onClick={() => setShowDoneItems((v) => !v)}
+          className="flex items-center gap-1.5 self-start border-0 bg-transparent p-0"
+        >
+          <span className="text-[10px] text-[#9aa1b1]">{showDoneItems ? "▾" : "▸"}</span>
+          <span className="text-[11.5px] text-[#8a91a3]">완료 {doneThisQ}건 {showDoneItems ? "숨기기" : "보기"}</span>
+        </button>
+      )}
     </article>
   );
 }
