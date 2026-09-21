@@ -373,7 +373,7 @@ export function SubProjectForm({
   onUpdateItemText,
   onUpdateItemStatus,
   onRemoveItem,
-  onReorderItem,
+  onMoveItem,
   onClose,
   onSave,
   onDeleteClick,
@@ -396,7 +396,12 @@ export function SubProjectForm({
   onUpdateItemText: (index: number, text: string) => void;
   onUpdateItemStatus: (index: number, status: ProgressItemStatus) => void;
   onRemoveItem: (index: number) => void;
-  onReorderItem: (fromIndex: number, toIndex: number) => void;
+  /** 세부 목표 드래그 이동 — 같은 분기 안 재정렬뿐 아니라 다른 분기 영역으로
+   * 넘기는 이동도 이 한 함수로 처리한다(요청: "분기 영역을 넘나들며 이동").
+   * toIndex를 생략하면(분기 영역 자체에 drop, 비어 있는 분기 포함) 그 분기의
+   * 맨 끝으로 옮기고, toIndex가 있으면(다른 항목 위에 drop) 그 항목의 분기로
+   * 옮기면서 그 위치에 끼워 넣는다. */
+  onMoveItem: (fromIndex: number, targetYear: number, targetQ: number, toIndex?: number) => void;
   onClose: () => void;
   onSave: () => void;
   onDeleteClick: () => void;
@@ -476,7 +481,18 @@ export function SubProjectForm({
                   <span>{closed ? "▸" : "▾"}</span>
                 </button>
                 {!closed && (
-                  <div className="flex flex-col gap-1 border-t border-navy-100 p-2">
+                  <div
+                    className="flex flex-col gap-1 border-t border-navy-100 p-2"
+                    onDragOver={(e) => e.preventDefault()}
+                    onDrop={() => {
+                      // 그룹 컨테이너 자체(빈 분기 포함, 또는 항목 사이 여백)에
+                      // 놓으면 그 분기 맨 끝으로 옮긴다 — 아래 항목별 onDrop이
+                      // stopPropagation으로 먼저 처리하므로, 여기까지 오는 건
+                      // "항목이 아닌 빈 영역에 놓은 경우"뿐이다.
+                      if (dragIndex !== null) onMoveItem(dragIndex, year, q);
+                      dragIndex = null;
+                    }}
+                  >
                     {draft.items.map((it, idx) =>
                       it.quarterYear === year && it.quarterNum === q ? (
                         <div
@@ -484,7 +500,11 @@ export function SubProjectForm({
                           draggable
                           onDragStart={() => { dragIndex = idx; }}
                           onDragOver={(e) => e.preventDefault()}
-                          onDrop={() => { if (dragIndex !== null && dragIndex !== idx) onReorderItem(dragIndex, idx); dragIndex = null; }}
+                          onDrop={(e) => {
+                            e.stopPropagation();
+                            if (dragIndex !== null && dragIndex !== idx) onMoveItem(dragIndex, year, q, idx);
+                            dragIndex = null;
+                          }}
                           className="flex items-center gap-2 rounded px-1 py-1 hover:bg-neutral-50"
                         >
                           <span className="cursor-grab text-neutral-300">⠿</span>

@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
-import { parseIsoDate, addMonthsTo, monthsBetween } from "@/lib/progress/date";
+import { parseIsoDate, addMonthsTo, monthsBetween, compareMonth, currentCalendarMonth, compareQuarter } from "@/lib/progress/date";
 import { PROGRESS_SAMPLE_STAGE_PW3_INDEX } from "@/lib/progress/constants";
 import { cycleSubItemStatus } from "@/lib/progress/derive";
 import type { ProgressItemStatus, ProgressStatus } from "@/app/generated/prisma/enums";
@@ -262,6 +262,29 @@ export async function toggleSubProjectItemStatusAction(itemId: string): Promise<
   return { ok: true };
 }
 
+/** 요청 1(재설계) — "다음 분기로"만 가능한 고정 이월 대신, 프로젝트에 이미
+ * 설정된 분기 구간(quarterStart~End) 중 아무 분기로나 직접 지정한다. UI가
+ * 이미 그 구간 밖의 값은 절대 보내지 않지만(ProgressCards.tsx의
+ * projectQuarters 드롭다운), 방어적으로 서버에서도 그 프로젝트의 실제
+ * 구간 안인지 확인한다 — 임의 분기로 튀는 걸 막는다. */
+export async function setSubProjectItemQuarterAction(itemId: string, year: number, q: number): Promise<ActionResult> {
+  await requireUser();
+  const item = await prisma.progressSubProjectItem.findUnique({
+    where: { id: itemId },
+    select: { subProject: { select: { quarterStartYear: true, quarterStartQ: true, quarterEndYear: true, quarterEndQ: true } } },
+  });
+  if (!item) return { error: "항목을 찾을 수 없습니다." };
+  const target = { year, q: q as 1 | 2 | 3 | 4 };
+  const start = { year: item.subProject.quarterStartYear, q: item.subProject.quarterStartQ as 1 | 2 | 3 | 4 };
+  const end = { year: item.subProject.quarterEndYear, q: item.subProject.quarterEndQ as 1 | 2 | 3 | 4 };
+  if (compareQuarter(target, start) < 0 || compareQuarter(target, end) > 0) {
+    return { error: "이 프로젝트에 설정된 분기 구간 밖입니다." };
+  }
+  await prisma.progressSubProjectItem.update({ where: { id: itemId }, data: { quarterYear: year, quarterNum: q } });
+  revalidateProgress();
+  return { ok: true };
+}
+
 // ── 공통 업무 ───────────────────────────────────────────────────────────
 
 export interface CommonTaskFormInput {
@@ -349,6 +372,53 @@ export async function updateCommonTaskAction(id: string, input: CommonTaskFormIn
   ]);
   revalidateProgress();
   return { ok: true };
+}
+
+/** "매월 반복" 버그 수정 — 코드 확인 결과 `repeat`/`repeatDay`는 지금까지
+ * ①"매월 N일" 표시 태그, ②기준일 경과 강조(isRepeatDueDayPassed)에만
+ * 쓰였고, 실제로 새 달이 될 때 항목을 자동 생성하는 코드 경로가 어디에도
+ * 없었다 — `ProgressCommonTaskItem`은 등록/수정 시점에 지정한
+ * monthStart~monthEnd 구간에 대해서만 한 번 만들어지고(createCommonTaskAction/
+ * updateCommonTaskAction), 그 뒤로 monthEnd는 사용자가 직접 수정 폼을 다시
+ * 저장하기 전까지는 절대 넓어지지 않는다. 그래서 9월까지로 등록해 둔
+ * "매월 20일 반복" 업무는 10월이 실제로 와도 10월 항목이 저절로 생기지
+ * 않았다(반복 로직 자체가 없었던 것이지, 조건 분기가 잘못된 게 아니다).
+ *
+ * 1차 수정(오늘이 속한 달까지만 채움) 이후 실사용 확인에서 또 다른 문제가
+ * 드러났다 — 공통 업무 월 이동(‹ ›)은 서버 재조회 없이 이미 받아온
+ * 데이터만 넘겨보는 구조라, "아직 오지 않은 달"(예: 오늘이 9월인데 10월을
+ * 미리 눌러보는 경우)은 그 시점에 DB에 항목 자체가 없어 항상 비어
+ * 보였다("연속해서 예약 등록되지 않는다"로 보고된 증상). 고침: 목표를
+ * "오늘이 속한 달"이 아니라 "오늘이 속한 달 + 11개월"(총 1년치)로 올려서,
+ * 페이지 진입마다 항상 향후 1년 분량이 미리 채워지게 한다. */
+export async function extendRepeatingCommonTasksToCurrentMonth(): Promise<void> {
+  // 1년(12개월) 앞까지 항상 미리 채워 둔다 — 오늘이 속한 달 포함 12개월.
+  const target = addMonthsTo(currentCalendarMonth(), 11);
+  const repeating = await prisma.progressCommonTask.findMany({
+    where: { repeat: true },
+    select: { id: true, monthEndYear: true, monthEndNum: true },
+  });
+  const behind = repeating.filter((t) => compareMonth(target, { year: t.monthEndYear, month: t.monthEndNum }) > 0);
+  if (behind.length === 0) return;
+
+  await prisma.$transaction(
+    behind.map((t) => {
+      const missing = monthsBetween(addMonthsTo({ year: t.monthEndYear, month: t.monthEndNum }, 1), target);
+      return prisma.progressCommonTask.update({
+        where: { id: t.id },
+        data: {
+          monthEndYear: target.year,
+          monthEndNum: target.month,
+          items: { create: missing.map((m) => ({ monthYear: m.year, monthNum: m.month })) },
+        },
+      });
+    }),
+  );
+  // revalidatePath는 호출하지 않는다 — 이 함수는 page.tsx(Server Component)
+  // 렌더 중에 직접 호출되고, 바로 다음 줄에서 getCommonTasks()를 다시
+  // 조회해 같은 요청 안에서 최신 데이터를 그대로 쓴다(Prisma 직접 호출은
+  // Next Data Cache 대상이 아니라 애초에 무효화할 캐시가 없다). 이 페이지는
+  // 세션 게이팅으로 항상 동적 렌더링되므로 다음 요청도 자동으로 최신이다.
 }
 
 export async function deleteCommonTaskAction(id: string): Promise<ActionResult> {

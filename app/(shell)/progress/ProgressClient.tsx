@@ -42,6 +42,7 @@ import {
   setSubProjectStatusAction,
   toggleCommonTaskItemStatusAction,
   toggleSubProjectItemStatusAction,
+  setSubProjectItemQuarterAction,
   updateCommonTaskAction,
   updateRegularProjectAction,
   updateSubProjectAction,
@@ -337,6 +338,10 @@ export function ProgressClient({
     await runQuickAction(() => toggleSubProjectItemStatusAction(itemId));
   }
 
+  async function handleSetSubItemQuarter(itemId: string, year: number, q: number) {
+    await runQuickAction(() => setSubProjectItemQuarterAction(itemId, year, q));
+  }
+
   function pickSubQuarter(fq: FiscalQuarter) {
     setDialog((prev) => {
       if (prev?.type !== "sub") return prev;
@@ -404,12 +409,19 @@ export function ProgressClient({
     });
   }
 
-  function reorderSubItem(fromIndex: number, toIndex: number) {
+  /** 세부 목표 드래그 이동 — 같은 분기 안 재정렬과 "다른 분기 영역으로
+   * 넘기기"를 하나로 처리한다(요청 2). toIndex가 없으면 그 분기 맨 끝으로
+   * 옮기고(빈 분기에 드롭하는 경우 포함), 있으면 그 위치에 끼워 넣으면서
+   * quarterYear/quarterNum도 대상 분기로 함께 바꾼다 — 이게 빠지면(기존
+   * 버그) 배열 순서만 바뀌고 항목은 원래 분기 그룹에 계속 표시된다. */
+  function moveSubItem(fromIndex: number, targetYear: number, targetQ: number, toIndex?: number) {
     setDialog((prev) => {
       if (prev?.type !== "sub") return prev;
       const items = [...prev.draft.items];
       const [moved] = items.splice(fromIndex, 1);
-      items.splice(toIndex, 0, moved);
+      const updated = { ...moved, quarterYear: targetYear, quarterNum: targetQ };
+      if (toIndex === undefined) items.push(updated);
+      else items.splice(toIndex, 0, updated);
       return { ...prev, draft: { ...prev.draft, items } };
     });
   }
@@ -604,7 +616,7 @@ export function ProgressClient({
           ) : (
             <div className="grid grid-cols-[repeat(auto-fill,minmax(400px,1fr))] gap-2">
               {activeSub.map((p) => (
-                <SubProjectCard key={p.id} project={p} quarter={quarter} pending={pending} onEdit={() => openEditSub(p)} onStatusChange={(s) => handleStatusChangeSub(p.id, s)} onToggleItem={handleToggleSubItem} />
+                <SubProjectCard key={p.id} project={p} quarter={quarter} pending={pending} onEdit={() => openEditSub(p)} onStatusChange={(s) => handleStatusChangeSub(p.id, s)} onToggleItem={handleToggleSubItem} onSetItemQuarter={handleSetSubItemQuarter} />
               ))}
             </div>
           )}
@@ -717,7 +729,7 @@ export function ProgressClient({
           onUpdateItemText={updateSubItemText}
           onUpdateItemStatus={updateSubItemStatus}
           onRemoveItem={removeSubItem}
-          onReorderItem={reorderSubItem}
+          onMoveItem={moveSubItem}
           onClose={requestCloseDialog}
           onSave={() => void saveSub()}
           onDeleteClick={() => setDialog((prev) => (prev?.type === "sub" ? { ...prev, confirmDelete: true } : prev))}

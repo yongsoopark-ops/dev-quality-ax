@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import {
   DESIGN_AVATAR,
   DESIGN_CARRIED_TAG,
@@ -18,7 +19,7 @@ import {
 } from "@/lib/progress/designTokens";
 import { PROGRESS_STATUS_LABEL, repeatDayLabel } from "@/lib/progress/constants";
 import { currentStageText, effectiveRounds, isRepeatDueDayPassed, pw8ReviewBadge, releaseDday, sampleDday, subProjectItemSpan, type BadgeTone } from "@/lib/progress/derive";
-import { compareQuarter, currentFiscalQuarter, quarterLabel, type FiscalQuarter } from "@/lib/progress/date";
+import { compareQuarter, currentFiscalQuarter, quarterLabel, quartersBetween, type FiscalQuarter } from "@/lib/progress/date";
 import type { ProgressCommonTaskItemRow, ProgressRegularProjectRow, ProgressSubProjectRow } from "@/lib/progress/types";
 import { PROGRESS_UI_SCALE } from "./ProgressPageShell";
 import type { ProgressStatus } from "@/app/generated/prisma/enums";
@@ -259,6 +260,7 @@ export function SubProjectCard({
   onEdit,
   onStatusChange,
   onToggleItem,
+  onSetItemQuarter,
 }: {
   project: ProgressSubProjectRow;
   quarter: FiscalQuarter;
@@ -266,7 +268,18 @@ export function SubProjectCard({
   onEdit: () => void;
   onStatusChange: (status: ProgressStatus) => void;
   onToggleItem: (itemId: string) => void;
+  /** 요청 1 — "다음 분기로" 고정 이월 버튼 대신, 항목의 분기 배지 자체를
+   * 버튼으로 만들어 눌렀을 때 이 프로젝트에 이미 설정된 분기 구간
+   * (project.quarterStart~End) 중 아무 분기로나 바로 옮길 수 있게 한다. */
+  onSetItemQuarter: (itemId: string, year: number, q: number) => void;
 }) {
+  // 항목별 분기 선택 드롭다운 — 한 카드 안에서 한 번에 하나만 열린다
+  // (StageRail의 openIndex와 동일한 패턴).
+  const [openQuarterItemId, setOpenQuarterItemId] = useState<string | null>(null);
+  const projectQuarters = quartersBetween(
+    { year: project.quarterStartYear, q: project.quarterStartQ as 1 | 2 | 3 | 4 },
+    { year: project.quarterEndYear, q: project.quarterEndQ as 1 | 2 | 3 | 4 },
+  );
   const doneTotal = project.items.filter((it) => it.status === "DONE").length;
   const total = project.items.length;
   const pct = total ? Math.round((doneTotal / total) * 100) : 0;
@@ -328,27 +341,71 @@ export function SubProjectCard({
           const idx = project.items.findIndex((x) => x.id === it.id);
           const marker = DESIGN_SUB_ITEM_MARKER[it.status];
           return (
-            <button
+            <div
               key={it.id}
-              type="button"
-              disabled={pending}
-              onClick={() => onToggleItem(it.id)}
-              className="flex w-full items-center gap-2 rounded-[7px] border px-2 py-[5px] text-left hover:bg-[#f7f9fc]"
+              className="flex w-full items-center gap-2 rounded-[7px] border px-2 py-[5px]"
               style={inProgress ? { borderColor: DESIGN_SUB_ITEM_INPROGRESS_ROW.border, background: DESIGN_SUB_ITEM_INPROGRESS_ROW.background } : { borderColor: "transparent" }}
             >
-              <span
-                className="box-border shrink-0 rounded-full"
-                style={{ width: 11, height: 11, border: `1.5px solid ${marker.border}`, background: marker.background }}
-              />
-              <span className="shrink-0 text-[11px] tabular-nums text-[#9aa1b1]">{String(idx + 1).padStart(2, "0")}</span>
-              <span
-                className="min-w-0 flex-1 truncate text-[12.5px]"
-                style={{ color: done ? "#8a91a3" : "#1b1f2b", fontWeight: isCur ? 600 : 400, textDecoration: done ? "line-through" : "none" }}
+              <button
+                type="button"
+                disabled={pending}
+                title={done ? "예정으로 되돌리기" : "완료로 전환"}
+                onClick={() => onToggleItem(it.id)}
+                className="flex min-w-0 flex-1 items-center gap-2 text-left hover:bg-[#f7f9fc]"
               >
-                {it.text}
-              </span>
-              <span className="shrink-0 whitespace-nowrap text-[10.5px] text-[#8a91a3]">{it.quarterYear} Q{it.quarterNum}</span>
-            </button>
+                <span
+                  className="box-border shrink-0 rounded-full"
+                  style={{ width: 11, height: 11, border: `1.5px solid ${marker.border}`, background: marker.background }}
+                />
+                <span className="shrink-0 text-[11px] tabular-nums text-[#9aa1b1]">{String(idx + 1).padStart(2, "0")}</span>
+                <span
+                  className="min-w-0 flex-1 truncate text-[12.5px]"
+                  style={{ color: done ? "#8a91a3" : "#1b1f2b", fontWeight: isCur ? 600 : 400, textDecoration: done ? "line-through" : "none" }}
+                >
+                  {it.text}
+                </span>
+              </button>
+              <div className="relative shrink-0">
+                <button
+                  type="button"
+                  disabled={pending}
+                  title="분기 변경"
+                  onClick={() => setOpenQuarterItemId((v) => (v === it.id ? null : it.id))}
+                  className="whitespace-nowrap rounded-full px-[9px] py-0.5 text-[10.5px] font-semibold hover:!border-amber-200 hover:!bg-amber-50 hover:!text-amber-700"
+                  style={{ color: DESIGN_CARRY_BUTTON.color, background: DESIGN_CARRY_BUTTON.bg, border: `1px solid ${DESIGN_CARRY_BUTTON.border}` }}
+                >
+                  {it.quarterYear} Q{it.quarterNum}
+                </button>
+                {openQuarterItemId === it.id && (
+                  <>
+                    <div className="fixed inset-0 z-[6]" onClick={() => setOpenQuarterItemId(null)} />
+                    <div
+                      className="absolute right-0 top-full z-[6] mt-1.5 flex min-w-[96px] flex-col gap-0.5 rounded-[9px] border border-[#d5dbe5] bg-white p-[5px]"
+                      style={{ boxShadow: "0 10px 26px rgba(18,22,34,0.16)" }}
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      {projectQuarters.map((fq) => {
+                        const active = fq.year === it.quarterYear && fq.q === it.quarterNum;
+                        return (
+                          <button
+                            key={`${fq.year}-${fq.q}`}
+                            type="button"
+                            onClick={() => {
+                              onSetItemQuarter(it.id, fq.year, fq.q);
+                              setOpenQuarterItemId(null);
+                            }}
+                            className="whitespace-nowrap rounded-md px-2 py-1.5 text-left text-[12px] text-[#1b1f2b] hover:bg-[#f1f4f8]"
+                            style={{ background: active ? "#f1f4f8" : "none", fontWeight: active ? 600 : 400 }}
+                          >
+                            {fq.year} Q{fq.q}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
           );
         })}
       </div>
