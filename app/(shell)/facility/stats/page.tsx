@@ -141,7 +141,7 @@ export default async function FacilityStatsPage({
                   const gradeTag = EQUIPMENT_GRADE_TAG[s.grade];
                   return (
                     <tr key={s.id} className="border-b border-neutral-100 last:border-0">
-                      <td className={`whitespace-nowrap ${FACILITY_TABLE_CELL_CLASS} font-mono text-[13px] tabular-nums text-neutral-500`}>{s.id}</td>
+                      <td className={`whitespace-nowrap ${FACILITY_TABLE_CELL_CLASS} font-mono text-[13px] tabular-nums text-neutral-500`}>{s.managementNumber}</td>
                       <td className={`whitespace-nowrap ${FACILITY_TABLE_CELL_CLASS}`}>
                         <Link href={hrefFor({ equip: s.id })} className={s.id === pickedId ? "font-medium text-blue-600" : "text-navy-950"}>
                           {s.name}

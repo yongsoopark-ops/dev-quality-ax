@@ -6,6 +6,9 @@ export type FacilityAssigneeOption = { kind: "USER"; userId: string; name: strin
 
 export interface EquipmentRow {
   id: string;
+  /** 화면에 "장비 관리 번호"로 표시하는 값 — id(PK)와 분리되어 있어 서로
+   * 다른 두 row가 같은 값을 가질 수 있다(예: 자외선 시험기 챔버 2대). */
+  managementNumber: string;
   kind: EquipmentKind;
   name: string;
   location: EquipmentLocation;
@@ -32,6 +35,7 @@ export interface EquipmentRow {
 export interface FacilityReservationEvent {
   id: string;
   equipmentId: string;
+  equipmentManagementNumber: string;
   equipmentName: string;
   equipmentStatus: EquipmentStatus;
   start: string; // "2026.09.09"
@@ -50,6 +54,7 @@ export interface FacilityReservationEvent {
 
 export interface FacilityStatRow {
   id: string;
+  managementNumber: string;
   name: string;
   grade: EquipmentGrade;
   metricLabel: string;

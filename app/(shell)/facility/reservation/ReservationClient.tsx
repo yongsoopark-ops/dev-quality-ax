@@ -105,7 +105,7 @@ export function ReservationClient({ initialRows, assigneeOptions }: { initialRow
 
   const visibleRows = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return rows.filter((r) => (kindFilter === "전체" || EQUIPMENT_KIND_LABEL[r.kind] === kindFilter) && (!q || r.name.toLowerCase().includes(q) || r.id.toLowerCase().includes(q)));
+    return rows.filter((r) => (kindFilter === "전체" || EQUIPMENT_KIND_LABEL[r.kind] === kindFilter) && (!q || r.name.toLowerCase().includes(q) || r.managementNumber.toLowerCase().includes(q)));
   }, [rows, query, kindFilter]);
 
   const availCount = rows.filter((r) => r.status === "AVAILABLE").length;
@@ -318,7 +318,7 @@ export function ReservationClient({ initialRows, assigneeOptions }: { initialRow
                 const gradeTag = EQUIPMENT_GRADE_TAG[r.grade];
                 return (
                   <tr key={r.id} className="border-b border-neutral-100 last:border-0">
-                    <td className={`whitespace-nowrap ${FACILITY_TABLE_CELL_CLASS} font-mono text-[13px] tabular-nums text-neutral-600`}>{r.id}</td>
+                    <td className={`whitespace-nowrap ${FACILITY_TABLE_CELL_CLASS} font-mono text-[13px] tabular-nums text-neutral-600`}>{r.managementNumber}</td>
                     <td className={`whitespace-nowrap ${FACILITY_TABLE_CELL_CLASS} text-[13px] text-neutral-500`}>{EQUIPMENT_KIND_LABEL[r.kind]}</td>
                     <td className={`whitespace-nowrap ${FACILITY_TABLE_CELL_CLASS} text-[14px] font-medium text-navy-950`}>{r.name}</td>
                     <td className={`whitespace-nowrap ${FACILITY_TABLE_CELL_CLASS} text-[13px] text-neutral-500`}>{EQUIPMENT_LOCATION_LABEL[r.location]}</td>
@@ -445,7 +445,7 @@ export function ReservationClient({ initialRows, assigneeOptions }: { initialRow
 }
 
 function equipLabel(equip: EquipmentRow): string {
-  return `${equip.id} · ${equip.name} · ${EQUIPMENT_LOCATION_LABEL[equip.location]} · 관리 대상 ${EQUIPMENT_GRADE_LABEL[equip.grade]} · 사용자 ${equip.assignedUserName ?? "미지정"}`;
+  return `${equip.managementNumber} · ${equip.name} · ${EQUIPMENT_LOCATION_LABEL[equip.location]} · 관리 대상 ${EQUIPMENT_GRADE_LABEL[equip.grade]} · 사용자 ${equip.assignedUserName ?? "미지정"}`;
 }
 
 function DialogShell({ children, width = 400 }: { children: React.ReactNode; width?: number }) {

@@ -122,7 +122,7 @@ export default async function FacilityCalendarPage({ searchParams }: { searchPar
                   key={e.id}
                   className="flex items-center overflow-hidden text-ellipsis whitespace-nowrap rounded-[3px] px-2 text-[13px] font-medium"
                   style={eventStyle(e)}
-                  title={`${e.equipmentId} ${e.start}~${e.end} · ${EQUIPMENT_STATUS_LABEL[e.equipmentStatus]}`}
+                  title={`${e.equipmentManagementNumber} ${e.start}~${e.end} · ${EQUIPMENT_STATUS_LABEL[e.equipmentStatus]}`}
                 >
                   {e.equipmentName} | {EQUIPMENT_TIME_HALF_LABEL[e.half]}{e.noteLabel ? ` · ${e.noteLabel}` : ""}
                 </div>

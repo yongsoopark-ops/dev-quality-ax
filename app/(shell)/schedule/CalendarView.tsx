@@ -153,7 +153,10 @@ export function CalendarView({
   onSelectTask: (task: TaskWithRelations) => void;
   onSelectSlot: (range: { start: Date; end: Date }) => void;
 }) {
-  const [view, setView] = useState<View>("month");
+  // Step(캘린더 UI/UX 개선, 요청 1) — 기본 진입 화면을 월간 → 주간으로
+  // 바꾼다. Toolbar의 전환 버튼 순서도 함께 "주 > 월"로 맞춘다
+  // (CalendarToolbar.tsx).
+  const [view, setView] = useState<View>("week");
   const [date, setDate] = useState<Date>(new Date());
   const [filters, setFilters] = useState<ScheduleFilters>(EMPTY_SCHEDULE_FILTERS);
   const [dragError, setDragError] = useState<string | null>(null);
@@ -435,6 +438,13 @@ export function CalendarView({
            날짜"가 시각적으로 섞이지 않게 한다. */
         .rbc-off-range-bg { background-color: transparent; }
         .rbc-off-range { opacity: 0.45; }
+        /* Step(캘린더 UI/UX 개선, 요청 3) — Month 일자별 셀 경계선이
+           react-big-calendar 기본값(#ddd, 1px)이라 셀 구분이 흐릿하다는
+           지적에 따라 더 선명한 색으로 바꾼다. 셀 배경/레이아웃은 전혀
+           건드리지 않고 경계선 색상만 override한다. */
+        .rbc-month-view, .rbc-month-row + .rbc-month-row, .rbc-day-bg + .rbc-day-bg {
+          border-color: #b8c0cf;
+        }
       `}</style>
       <div ref={calendarContainerRef} className="relative min-h-0 flex-1">
         <WeekViewUsersContext.Provider

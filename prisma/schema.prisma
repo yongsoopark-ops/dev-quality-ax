@@ -888,6 +888,14 @@ enum EquipmentMetricKind {
 /// 이 스냅샷과 이력을 하나의 테이블로 합치지 않는다).
 model Equipment {
   id                String              @id
+  /// 화면에 "장비 관리 번호"로 표시되는 값 — 지금까지는 id를 그대로
+  /// 보여줬지만, 자외선 시험기(챔버 2개, 관리번호는 1개 공유)처럼 물리적
+  /// 관리번호와 DB 행(=예약 가능 단위)이 1:1이 아닌 예외가 생겨 id(PK)와
+  /// 분리했다. id는 여전히 실제 예약/이력이 붙는 진짜 식별자이고,
+  /// managementNumber는 순수 표시/검색용 값이라 두 row가 같은 값을 가져도
+  /// 무방하다(예: QA-TEQ-025/026 모두 "QA-TEQ-020"). 기존 설비는 전부
+  /// managementNumber = id로 백필해 화면에 보이던 값이 그대로 유지된다.
+  managementNumber  String
   kind              EquipmentKind
   name              String
   location          EquipmentLocation

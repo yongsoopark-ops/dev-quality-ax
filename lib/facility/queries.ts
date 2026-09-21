@@ -62,6 +62,7 @@ export async function getEquipmentRows(): Promise<EquipmentRow[]> {
     const latestManualLog = r.usageLogs[0] ?? null;
     return {
       id: r.id,
+      managementNumber: r.managementNumber,
       kind: r.kind,
       name: r.name,
       location: r.location,
@@ -91,7 +92,7 @@ export async function getEquipmentRows(): Promise<EquipmentRow[]> {
 export async function getWeekReservations(weekStart: Date, weekEnd: Date): Promise<FacilityReservationEvent[]> {
   const reservations = await prisma.equipmentReservation.findMany({
     where: { startDate: { lte: weekEnd }, endDate: { gte: weekStart } },
-    include: { equipment: { select: { name: true, status: true } }, assignedUser: { select: { name: true } } },
+    include: { equipment: { select: { name: true, status: true, managementNumber: true } }, assignedUser: { select: { name: true } } },
     orderBy: { startDate: "asc" },
   });
 
@@ -104,6 +105,7 @@ export async function getWeekReservations(weekStart: Date, weekEnd: Date): Promi
     return {
       id: r.id,
       equipmentId: r.equipmentId,
+      equipmentManagementNumber: r.equipment.managementNumber,
       equipmentName: r.equipment.name,
       equipmentStatus: r.equipment.status,
       start: formatCalendarDate(r.startDate),
@@ -175,6 +177,7 @@ export async function getStatRows(period: FacilityStatsPeriod, year: number, mon
       ]);
       return {
         id: eq.id,
+        managementNumber: eq.managementNumber,
         name: eq.name,
         grade: eq.grade,
         metricLabel: EQUIPMENT_METRIC_LABEL[metricKind],

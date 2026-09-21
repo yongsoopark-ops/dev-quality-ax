@@ -147,12 +147,14 @@ export default async function SchedulePage({
   return (
     <div className="flex h-dvh min-h-[560px] flex-col overflow-hidden p-8">
       {/* Step(일정 관리 + 회의록 UI Polish) — Page Title 존재감 강화(요청사항 1):
-          text-lg(18px)/semibold이던 것을 text-3xl(30px)/bold로 키우고, 보조
-          설명 1줄을 그대로 유지하되 제목-컨트롤 간 여백을 넓힌다(mt-6 →
-          아래 컨테이너의 mt-7). 디자인 톤(navy 팔레트)은 그대로 유지한다. */}
+          text-lg(18px)/semibold이던 것을 text-3xl(30px)/bold로 키웠다. 디자인
+          톤(navy 팔레트)은 그대로 유지한다.
+          Step(캘린더 UI/UX 개선, 요청 2) — 보조 안내 문구("이번 주 업무와
+          회의 일정을 관리합니다")를 제거했다. 아래 캘린더 영역이 이미
+          `flex-1`(min-h-0)이라 이 줄 삭제만으로 비는 세로 공간이 자동으로
+          캘린더 쪽으로 흡수된다 — 별도 margin 재계산 불필요. */}
       <div className="shrink-0">
         <h1 className="text-3xl font-bold text-navy-950">일정 관리</h1>
-        <p className="mt-1.5 text-sm text-navy-950/60">이번 주 업무와 회의 일정을 관리합니다.</p>
       </div>
       <div className="mt-7 min-h-0 flex-1">
         <ScheduleClient

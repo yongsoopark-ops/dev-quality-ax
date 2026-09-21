@@ -408,9 +408,9 @@ function WeekRow({
     // 단순화했다. 담당자 구분은 이름 칸의 얇은 left accent border + Avatar
     // 색만으로 표현하고, hover 시에만 아주 옅은 회색을 준다(Bar 색이 가장
     // 먼저 보이도록).
-    <div className="flex border-b border-navy-100 bg-white last:border-b-0 hover:bg-navy-950/[0.015]">
+    <div className="flex border-b border-slate-300 bg-white last:border-b-0 hover:bg-navy-950/[0.015]">
       <div
-        className="flex shrink-0 items-center gap-2 border-r border-navy-100 px-3"
+        className="flex shrink-0 items-center gap-2 border-r border-slate-300 px-3"
         style={{ width: NAME_COL_WIDTH, height: rowHeight, boxShadow: `inset 3px 0 0 0 ${tint.accent}` }}
       >
         <Avatar label={initials} tint={tint} icon={icon} />
@@ -487,8 +487,8 @@ export function CustomWeekView({ date, events, onSelectEvent, onSelectSlot }: Cu
 
   return (
     <div className="flex flex-col overflow-x-auto">
-      <div className="flex border-b border-navy-100">
-        <div className="shrink-0 border-r border-navy-100" style={{ width: NAME_COL_WIDTH }} />
+      <div className="flex border-b border-slate-300">
+        <div className="shrink-0 border-r border-slate-300" style={{ width: NAME_COL_WIDTH }} />
         <div className="grid flex-1 grid-cols-5">
           {days.map((d, i) => {
             const isToday = i === todayColIndex;
@@ -528,57 +528,62 @@ export function CustomWeekView({ date, events, onSelectEvent, onSelectSlot }: Cu
 
       {/* Step(담당자 UX 개선) — 최종 Row 순서: 1. 공통 2. 각 담당자(기존
           정렬 기준인 users 배열 순서 그대로 재사용, 하드코딩 순서 없음)
-          3. 미배정(레거시 예외, 있을 때만). */}
-      {common.length > 0 && (
-        <WeekRow
-          label={COMMON_ROW_LABEL}
-          initials=""
-          tint={COMMON_ASSIGNEE_TINT}
-          icon="common"
-          eventsInRow={common}
-          weekStart={weekStart}
-          weekEndExclusive={weekEndExclusive}
-          days={days}
-          todayColIndex={todayColIndex}
-          onSelectEvent={onSelectEvent}
-          onSelectSlot={onSelectSlot}
-          onCommitDateChange={onEventDateChange}
-        />
-      )}
+          3. 미배정(레거시 예외, 있을 때만).
+          Step(캘린더 UI/UX 개선, 요청 3) — 담당자 Row 사이에 gap-2를 추가로
+          둬 영역 구분을 더 뚜렷하게 한다. 각 Row 자체의 border-b는 그대로
+          유지되므로(위 WeekRow), 경계선 + 여백이 함께 구분을 돕는다. */}
+      <div className="flex flex-col gap-2">
+        {common.length > 0 && (
+          <WeekRow
+            label={COMMON_ROW_LABEL}
+            initials=""
+            tint={COMMON_ASSIGNEE_TINT}
+            icon="common"
+            eventsInRow={common}
+            weekStart={weekStart}
+            weekEndExclusive={weekEndExclusive}
+            days={days}
+            todayColIndex={todayColIndex}
+            onSelectEvent={onSelectEvent}
+            onSelectSlot={onSelectSlot}
+            onCommitDateChange={onEventDateChange}
+          />
+        )}
 
-      {users.map((user, i) => (
-        <WeekRow
-          key={user.id}
-          label={user.name ?? user.email}
-          initials={getUserInitials(user.name, user.email)}
-          tint={getUserTint(i)}
-          eventsInRow={overlapping.filter((e) => e.task.assigneeIds.includes(user.id))}
-          weekStart={weekStart}
-          weekEndExclusive={weekEndExclusive}
-          days={days}
-          todayColIndex={todayColIndex}
-          onSelectEvent={onSelectEvent}
-          onSelectSlot={onSelectSlot}
-          onCommitDateChange={onEventDateChange}
-        />
-      ))}
+        {users.map((user, i) => (
+          <WeekRow
+            key={user.id}
+            label={user.name ?? user.email}
+            initials={getUserInitials(user.name, user.email)}
+            tint={getUserTint(i)}
+            eventsInRow={overlapping.filter((e) => e.task.assigneeIds.includes(user.id))}
+            weekStart={weekStart}
+            weekEndExclusive={weekEndExclusive}
+            days={days}
+            todayColIndex={todayColIndex}
+            onSelectEvent={onSelectEvent}
+            onSelectSlot={onSelectSlot}
+            onCommitDateChange={onEventDateChange}
+          />
+        ))}
 
-      {unassigned.length > 0 && (
-        <WeekRow
-          label={UNASSIGNED_ROW_LABEL}
-          initials=""
-          tint={UNASSIGNED_USER_TINT}
-          icon="unassigned"
-          eventsInRow={unassigned}
-          weekStart={weekStart}
-          weekEndExclusive={weekEndExclusive}
-          days={days}
-          todayColIndex={todayColIndex}
-          onSelectEvent={onSelectEvent}
-          onSelectSlot={onSelectSlot}
-          onCommitDateChange={onEventDateChange}
-        />
-      )}
+        {unassigned.length > 0 && (
+          <WeekRow
+            label={UNASSIGNED_ROW_LABEL}
+            initials=""
+            tint={UNASSIGNED_USER_TINT}
+            icon="unassigned"
+            eventsInRow={unassigned}
+            weekStart={weekStart}
+            weekEndExclusive={weekEndExclusive}
+            days={days}
+            todayColIndex={todayColIndex}
+            onSelectEvent={onSelectEvent}
+            onSelectSlot={onSelectSlot}
+            onCommitDateChange={onEventDateChange}
+          />
+        )}
+      </div>
     </div>
   );
 }

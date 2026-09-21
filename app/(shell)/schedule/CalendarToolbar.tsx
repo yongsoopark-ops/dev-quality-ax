@@ -23,9 +23,18 @@ export function CalendarToolbar({ date, label, view, onNavigate, onView }: Toolb
   // Step(일정 관리 + 회의록 UI Polish) — 컨트롤 높이/글자 크기 확대(요청사항
   // 2: "최소 36~40px 수준"). 버튼 h-7(28px)→h-9(36px), 글자 xs(12px)→sm
   // (14px)로 키웠다 — 동작(onNavigate/onView 호출)은 그대로다.
+  //
+  // Step(캘린더 UI/UX 개선, 요청 4) — 이전엔 이동(‹ 라벨 ›) 그룹이 좌측 끝,
+  // 월/주 전환 버튼이 우측 끝에 있어 둘을 오갈 때 마우스 이동 거리가 컸다.
+  // 3열 grid(좌측 spacer / 중앙 이동 그룹 / 우측 전환 버튼)로 바꿔 이동
+  // 그룹을 중앙으로 옮긴다 — 전환 버튼은 기존과 같은 우측 자리를 유지해
+  // 서로 가까워진다. 좌측 칸은 균형을 맞추는 빈 공간일 뿐 별도 내용은
+  // 없다.
   return (
-    <div className="flex flex-wrap items-center justify-between gap-2">
-      <div className="flex items-center gap-1">
+    <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2">
+      <div aria-hidden />
+
+      <div className="flex items-center justify-self-center gap-1">
         <button
           type="button"
           onClick={() => onNavigate(Navigate.PREVIOUS)}
@@ -59,8 +68,8 @@ export function CalendarToolbar({ date, label, view, onNavigate, onView }: Toolb
         />
       </div>
 
-      <div className="flex h-9 gap-1 rounded-md border border-navy-100 p-0.5">
-        {(["month", "week"] as const).map((v) => (
+      <div className="flex h-9 justify-self-end gap-1 rounded-md border border-navy-100 p-0.5">
+        {(["week", "month"] as const).map((v) => (
           <button
             key={v}
             type="button"
